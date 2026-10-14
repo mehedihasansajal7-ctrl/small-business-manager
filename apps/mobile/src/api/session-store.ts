@@ -4,9 +4,10 @@ import * as SecureStore from 'expo-secure-store';
  * Session persistence.
  *
  * The API authenticates with an **HttpOnly signed cookie** (`sbm_session`).
- * There is no bearer-token fallback in the server, so on a native client the
- * only way to stay signed in is to capture the `Set-Cookie` value and send it
- * back as a `Cookie` request header ourselves.
+ * React Native does not reliably expose `Set-Cookie` to JavaScript, so the
+ * dependable path on a device is the `sessionToken` the server returns in the
+ * login/register response body, sent back as `Authorization: Bearer`. The
+ * `Cookie` header is kept as a second, equivalent path for browser clients.
  *
  * We keep exactly the `name=value` pair (attributes are meaningless to us) in
  * the device keystore via expo-secure-store:

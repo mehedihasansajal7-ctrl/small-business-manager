@@ -40,9 +40,18 @@ cookie value = `${sessionId}.${base64url(HMAC-SHA256(sessionId, SESSION_SECRET))
 - The signature is verified with `timingSafeEqual` (`unsignValue` returns `null` on any length
   mismatch or bad MAC).
 - Expiry is checked on every request; an expired session is **deleted** on the spot.
-- Cookie attributes (`serializeCookie`, defaults): `HttpOnly`, `Secure` **on by default**,
-  `SameSite=Lax`, `Path=/`, `Max-Age = SESSION_TTL_HOURS × 3600` (default 720 h = 30 days).
-- `Secure` is only relaxed when `INSECURE_COOKIES=1`, which `.env.example` documents as
+- Cookie attributes (`serializeCookie`, defaults): `HttpOnly`, `SameSite=Lax`, and
+  `Secure` **only when the request actually arrived over HTTPS** (`x-forwarded-proto: https`
+  or a TLS socket) — a cookie marked `Secure` on plain HTTP is silently discarded by
+  browsers, which presents as "sign-in does nothing" on a LAN setup. The session is
+  therefore accepted through **either**:
+  1. the `sbm_session` HttpOnly cookie (browser clients), or
+  2. `Authorization: Bearer <sessionToken>`, where `sessionToken` is the same signed
+     value returned in the login/register response body — needed because React Native's
+     `fetch` does not reliably expose `Set-Cookie` to JavaScript.
+  Both are HMAC-signed with `SESSION_SECRET`; a tampered cookie or token is rejected (`401`).
+- `Path=/` and `Max-Age = SESSION_TTL_HOURS x 3600` (default 720 h = 30 days).
+- `Secure` is now applied *only on HTTPS*; setting `INSECURE_COOKIES=1` forces it off entirely. `.env.example` documents that as **local HTTP development only**, and production must leave it unset.
   **local HTTP development only**. Production must leave it unset.
 - Logout destroys the session row and sets an empty cookie with `Max-Age=0`.
 - `pruneExpiredSessions()` runs hourly as a background job.

@@ -16,9 +16,10 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'SignIn'>;
 /**
  * Sign in.
  *
- * The server authenticates with an HttpOnly cookie and offers no bearer-token
- * fallback, so this screen is the only place a session can be created — and it
- * needs the internet. The UI says so plainly instead of failing silently.
+ * This screen is the only place a session can be created, and it needs the
+ * internet. The server accepts that session either as an HttpOnly cookie or as
+ * an `Authorization: Bearer` token, so a device stays signed in whichever way its
+ * `fetch` behaves. The UI says what is needed plainly instead of failing silently.
  *
  * It also owns the "which server?" question: a sideloaded APK can be pointed at
  * any address (a PC on the office LAN, or a self-hosted box) so that one file can

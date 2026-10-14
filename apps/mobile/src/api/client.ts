@@ -16,7 +16,10 @@ import {
  *  - the API is plain `fetch`-shaped, and the offline outbox already owns
  *    retry/backoff, so a second retry layer would create duplicate writes;
  *  - we must read `Set-Cookie` manually because React Native's fetch does not
- *    maintain a cookie jar, and the server has **no bearer-token fallback**.
+ *    maintain a cookie jar. The server therefore accepts the session as EITHER
+ *    an `Authorization: Bearer <sessionToken>` header (returned in the login and
+ *    register response bodies) OR the `sbm_session` cookie; both are sent here,
+ *    because relying on `Set-Cookie` alone silently loses the session on a device.
  *
  * Every non-2xx response is normalised into an `ApiError` carrying the server's
  * `{ error: { code, message } }` body, so screens can show the real reason
