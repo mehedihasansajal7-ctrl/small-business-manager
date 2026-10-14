@@ -162,24 +162,59 @@ jobs:
           NAME="${{ steps.apk.outputs.name }}"
 
           NOTES=$(cat <<EOF
-          ![status](https://img.shields.io/badge/APK-side--loadable-brightgreen)
+          # Small Business Manager — Android (${TAG})
 
-          Android APK for **Small Business Manager** (Small Business Management + Farming module) - offline-first, for 2-5 business partners.
+          **English** · [বাংলা](#বাংলা--বাংলা-ভাষায়-নিচে)
+
+          Side-loadable Android APK for **Small Business Manager**: small business management **plus** the full farming module, for 2–5 business partners in Bangladesh. Offline-first, and no paid service is required anywhere.
+
+          ## English
+
+          ### ⬇️ Download
+          `\`$NAME\`` from the assets below.
 
           ### Install
-          1. Download \`$NAME\` below.
-          2. On the phone, allow installing from this source (Android asks once).
-          3. Open the app, then on the sign-in screen expand **Advanced: which server?** and enter the address of your server (for example \`http://192.168.0.20:8787\`), then tap **Test and save this server**.
+          1. Download the APK, tap it, and allow installing from this source once.
+          2. If Play Protect warns *"unknown developer"*, choose **Install anyway**.
 
-          ### This build
-          - API address baked in: \`${{ inputs.apiUrl }}\`
-          - You can change the server address inside the app at any time; the build address is only the default.
+          ### ⚠️ First run: set the server address
+          The app is a client and needs a Small Business Manager API. On the sign-in screen expand **Advanced: which server?**, type the address (for example `\`${{ inputs.apiUrl }}\``), tap **Test and save this server**, then sign in. This build was baked with that address as a default only — the address you save inside the app wins.
+
+          ### Language
+          Fully bilingual, **Bangla by default**. The switcher is on the **sign-in screen itself** (so it is reachable before login) and in **Settings → Language**.
+
           ${{ inputs.releaseNotes }}
 
-          ### Honest notes
-          - Signed for side-loading, not published on Google Play.
-          - The app works offline once signed in; the first sign-in and invitation acceptance need the server to be reachable.
-          - No paid service is required anywhere in this project.
+          ### Honest limitations
+          - Side-loaded build, not on Google Play; update by installing a newer APK over the old one.
+          - Needs a reachable API server (see `DEPLOYMENT_FREE.md` in the private source repository).
+          - First sign-in and accepting an invite need the server; after that the app works offline.
+          - Not tax or audit software; no regulatory compliance is claimed.
+
+          ---
+
+          ## বাংলা — বাংলা ভাষায় নিচে
+
+          **ছোট ব্যবসা ম্যানেজার** অ্যাপের অ্যান্ড্রয়েড APK: ছোট ব্যবসার সম্পূর্ণ হিসাব **এবং** পূর্ণ কৃষি/খামার মডিউল — বাংলাদেশের ২–৫ জন অংশীদারের জন্য। অফলাইনেও চলে, আর কোথাও কোনো টাকা লাগে না।
+
+          ### ⬇️ ডাউনলোড
+          নিচের asset থেকে `\`$NAME\`` ফাইলটি নিন।
+
+          ### ইনস্টল
+          1. APK ফাইলটি ডাউনলোড করুন, তাতে ট্যাপ করুন, এবং একবার "এই সোর্স থেকে ইনস্টল করার অনুমতি" দিন।
+          2. Play Protect যদি *"unknown developer"* সতর্কতা দেয়, **Install anyway** চাপুন।
+
+          ### ⚠️ প্রথমবার: সার্ভারের ঠিকানা দিতে হবে
+          অ্যাপটি একটি ক্লায়েন্ট, এটির জন্য Small Business Manager API দরকার। সাইন-ইন স্ক্রিনে **Advanced: which server?** খুলে ঠিকানা লিখুন (যেমন `\`${{ inputs.apiUrl }}\``), **Test and save this server** চাপুন, তারপর সাইন-ইন করুন। ডিফল্ট ঠিকানাটি কেবল নমুনা — অ্যাপের ভেতরে সংরক্ষিত ঠিকানাই আসলে ব্যবহার হয়।
+
+          ### ভাষা
+          সম্পূর্ণ দ্বিভাষিক, **ডিফল্ট বাংলা**। ভাষা বদলানোর বোতামটি **সাইন-ইন স্ক্রিনেই** আছে (লগইনের আগেই পাওয়া যায়) এবং **Settings → Language**-এও আছে।
+
+          ### সৎ সীমাবদ্ধতা
+          - এটি side-load বিল্ড, Google Play-তে নেই; নতুন APK পুরোনোটির উপরে ইনস্টল করে আপডেট করুন।
+          - কাজ করার জন্য একটি চালু API সার্ভার দরকার (প্রাইভেট সোর্স রিপোর `DEPLOYMENT_FREE.md` দেখুন)।
+          - প্রথম সাইন-ইন ও ইনভাইট গ্রহণে ইন্টারনেট লাগে; এরপর অ্যাপ অফলাইনেও চলে।
+          - এটি কর বা অডিট সফটওয়্যার নয়; কোনো নিয়মনীতি মেনে চলার দাবিও নেই।
           EOF
           )
 
