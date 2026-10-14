@@ -787,6 +787,10 @@ CREATE TABLE number_sequences (
   next_value INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (business_id, kind)
 );
+
+-- One explicit conversion per unit pair per business (a second, different
+-- factor for the same pair would be ambiguous at the point of conversion).
+CREATE UNIQUE INDEX idx_explicit_conversion_pair ON explicit_conversions(business_id, from_unit, to_unit);
   `,
   },
 ];

@@ -186,13 +186,19 @@ export class Repository {
     deviceId?: string | null;
     actorEmail?: string | null;
   }): void {
+    // Resolve the actor's email so an audit row is always attributable, even
+    // when the caller did not pass it explicitly.
+    let actorEmail = input.actorEmail ?? null;
+    if (!actorEmail && input.actorId) {
+      actorEmail = this.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [input.actorId])?.email ?? null;
+    }
     this.db.run(
       'INSERT INTO audit_logs (id, business_id, actor_id, actor_email, action, entity_type, entity_id, detail, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         this.id(),
         input.businessId,
         input.actorId,
-        input.actorEmail ?? null,
+        actorEmail,
         input.action,
         input.entityType,
         input.entityId ?? null,

@@ -229,6 +229,7 @@ export function buildRouter(deps: RouteDeps): Router {
 
   router.post('/api/members/invites', (ctx) => {
     const caller = requireCaller(ctx);
+    inviteLimiter.consume(clientIp(ctx.req));
     const body = asRecord(ctx.body, 'body');
     return repo.createInvite(caller, {
       role: requireString(body.role, 'role', { maxLength: 32 }),
@@ -277,17 +278,26 @@ export function buildRouter(deps: RouteDeps): Router {
     repo.assertPermission(caller, 'product.manage');
     const body = asRecord(ctx.body, 'body');
     const id = requireString(body.id ?? `conv-${Date.now()}`, 'id', { maxLength: 60 });
+    const from = requireString(body.from, 'from', { maxLength: 24 });
+    const to = requireString(body.to, 'to', { maxLength: 24 });
+    // A second, different factor for the same unit pair would be ambiguous.
+    const clash = repo.db.get<{ id: string }>(
+      'SELECT id FROM explicit_conversions WHERE business_id = ? AND ((from_unit = ? AND to_unit = ?) OR (from_unit = ? AND to_unit = ?))',
+      [caller.business.id, from, to, to, from],
+    );
+    if (clash) throw HttpError.conflict('CONVERSION_EXISTS', `A conversion between ${from} and ${to} is already registered (${clash.id})`);
     repo.db.run('INSERT INTO explicit_conversions (id, business_id, from_unit, to_unit, factor, note, item_id, approved_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
       id,
       caller.business.id,
-      requireString(body.from, 'from', { maxLength: 24 }),
-      requireString(body.to, 'to', { maxLength: 24 }),
+      from,
+      to,
       String(body.factor ?? '1'),
       requireString(body.note, 'note', { minLength: 5, maxLength: 400 }),
       optionalString(body.itemId, 'itemId', 64),
       caller.user.email,
       new Date().toISOString(),
     ]);
+    repo.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'unit.conversion.create', entityType: 'explicit_conversion', entityId: id, detail: { from, to, factor: body.factor } });
     return { id };
   });
 
