@@ -1,0 +1,2300 @@
+import { randomUUID } from 'node:crypto';
+import {
+  ACCOUNT,
+  Decimal,
+  StockError,
+  addMoney,
+  allocateCost,
+  assignHarvestCost,
+  balanceSheet,
+  buildCustomerReceiptPosting,
+  buildDirectBatchCostPosting,
+  buildHarvestPosting,
+  buildIncomeExpensePosting,
+  buildInputIssuePosting,
+  buildInventoryLossPosting,
+  buildPartnerCapitalPosting,
+  buildPurchasePosting,
+  buildSalePosting,
+  buildSupplierPaymentPosting,
+  buildTransferPosting,
+  cashBasisOperatingResult,
+  cashFlow,
+  checkStockImpact,
+  currentUnitCost,
+  dec,
+  defaultBusiness,
+  generateInviteCode,
+  inviteExpiry,
+  isValidEmail,
+  money,
+  mulMoney,
+  normalizeInviteCode,
+  pctOf,
+  permissionsFor,
+  profitAndLoss,
+  sha256Hex,
+  subMoney,
+  sumMoney,
+  trialBalance,
+  UnitRegistry,
+  validateInviteRedemption,
+  validateJournalEntry,
+  weightedAverageValuation,
+  zeroMoney,
+} from '@sbm/domain';
+import type {
+  BusinessVisibilitySettings,
+  CostAllocationShare,
+  Dimension,
+  ExplicitConversion,
+  FarmingType,
+  FarmUnitKind,
+  JournalEntry,
+  JournalLine,
+  Money,
+  Permission,
+  Role,
+  StockMovement,
+  UnitDef,
+} from '@sbm/domain';
+import type { AuthService, UserRow } from './auth.js';
+import type { AppConfig } from './config.js';
+import { Database, nextReference, parseJson } from './db.js';
+import { HttpError, requireEnum, requireString, optionalString, asRecord } from './http.js';
+
+/** Row shapes (SQLite stores decimals as TEXT and booleans as 0/1). */
+export interface BusinessRow {
+  id: string;
+  name: string;
+  slug: string;
+  currency: string;
+  timezone: string;
+  locale: string;
+  country: string;
+  farming_types: string;
+  enabled_modules: string;
+  settings: string;
+  plan: string;
+  revision: number;
+  created_at: string;
+  created_by: string;
+}
+
+export interface MemberRow {
+  id: string;
+  business_id: string;
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: string;
+  status: string;
+  grants: string;
+  denials: string;
+  joined_at: string;
+  invited_by: string | null;
+  last_active_at: string | null;
+}
+
+export interface ProductRow {
+  id: string;
+  business_id: string;
+  sku: string | null;
+  name: string;
+  name_bn: string | null;
+  category_id: string | null;
+  kind: string;
+  unit: string;
+  sale_price: string | null;
+  purchase_price: string | null;
+  tax_rate: string | null;
+  reorder_level: string | null;
+  track_lots: number;
+  is_active: number;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface MovementRow {
+  id: string;
+  business_id: string;
+  item_id: string;
+  location_id: string;
+  direction: 'IN' | 'OUT';
+  quantity: string;
+  unit: string;
+  unit_cost: string;
+  currency: string;
+  lot_id: string | null;
+  expiry_date: string | null;
+  source_type: string;
+  source_id: string;
+  actor_id: string;
+  device_id: string | null;
+  event_id: string;
+  idempotency_key: string;
+  reversal_of: string | null;
+  reason: string | null;
+  occurred_at: string;
+  created_at: string;
+}
+
+export interface Caller {
+  readonly user: UserRow;
+  readonly business: BusinessRow;
+  readonly member: MemberRow;
+  readonly role: Role;
+}
+
+const VISIBILITY_KEYS: readonly (keyof BusinessVisibilitySettings)[] = ['partnerCanSeeFinancialReports', 'partnerCanSeeCosts', 'partnerCanSeeCapital'];
+
+/** Length in the longest dimension, for scale limits in numeric handling. */
+export function isKnownDimension(value: string): value is Dimension {
+  return ['MASS', 'VOLUME', 'COUNT', 'AREA', 'LENGTH', 'TIME'].includes(value);
+}
+
+export class Repository {
+  constructor(
+    readonly db: Database,
+    readonly auth: AuthService,
+    readonly config: AppConfig,
+  ) {}
+
+  private now(): string {
+    return new Date().toISOString();
+  }
+
+  private id(): string {
+    return randomUUID();
+  }
+
+  // -------------------------------------------------------------------------
+  // Tenancy, membership and audit
+  // -------------------------------------------------------------------------
+
+  audit(input: {
+    businessId: string | null;
+    actorId: string | null;
+    action: string;
+    entityType: string;
+    entityId?: string | null;
+    detail?: unknown;
+    deviceId?: string | null;
+    actorEmail?: string | null;
+  }): void {
+    this.db.run(
+      'INSERT INTO audit_logs (id, business_id, actor_id, actor_email, action, entity_type, entity_id, detail, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        this.id(),
+        input.businessId,
+        input.actorId,
+        input.actorEmail ?? null,
+        input.action,
+        input.entityType,
+        input.entityId ?? null,
+        JSON.stringify(input.detail ?? {}),
+        input.deviceId ?? null,
+        this.now(),
+      ],
+    );
+  }
+
+  listBusinessesForUser(userId: string): unknown[] {
+    return this.db
+      .all<MemberRow & { business_name: string; currency: string; timezone: string; slug: string }>(
+        `SELECT m.*, b.name AS business_name, b.currency, b.timezone, b.slug
+         FROM members m JOIN businesses b ON b.id = m.business_id
+         WHERE m.user_id = ? AND m.status = 'active' AND b.id IS NOT NULL
+         ORDER BY m.joined_at`,
+        [userId],
+      )
+      .map((row) => ({
+        businessId: row.business_id,
+        name: row.business_name,
+        slug: row.slug,
+        currency: row.currency,
+        timezone: row.timezone,
+        role: row.role,
+        memberId: row.id,
+      }));
+  }
+
+  getBusiness(businessId: string): BusinessRow {
+    const row = this.db.get<BusinessRow>('SELECT * FROM businesses WHERE id = ?', [businessId]);
+    if (!row) throw HttpError.notFound('Business not found');
+    return row;
+  }
+
+  settingsFor(businessId: string): BusinessVisibilitySettings {
+    const rows = this.db.all<{ key: string; value: string }>('SELECT key, value FROM business_settings WHERE business_id = ?', [businessId]);
+    const settings: Record<string, unknown> = {};
+    for (const row of rows) settings[row.key] = parseJson<unknown>(row.value, null);
+    const visibility: BusinessVisibilitySettings = {};
+    for (const key of VISIBILITY_KEYS) {
+      if (settings[key] === true) (visibility as Record<string, unknown>)[key] = true;
+    }
+    return visibility;
+  }
+
+  setSetting(businessId: string, key: string, value: unknown): void {
+    this.db.run(
+      `INSERT INTO business_settings (business_id, key, value, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(business_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      [businessId, key, JSON.stringify(value), this.now()],
+    );
+  }
+
+  /** Resolve the caller's membership and role for a business. Throws when absent. */
+  caller(user: UserRow, businessId: string): Caller {
+    const business = this.getBusiness(businessId);
+    const member = this.db.get<MemberRow>(`SELECT * FROM members WHERE business_id = ? AND user_id = ?`, [businessId, user.id]);
+    if (!member) throw HttpError.forbidden('You are not a member of this business');
+    if (member.status === 'suspended') throw HttpError.forbidden('Your access to this business has been suspended');
+    if (member.status === 'removed') throw HttpError.forbidden('You were removed from this business');
+    return { user, business, member, role: member.role as Role };
+  }
+
+  permissions(caller: Caller): ReadonlySet<Permission> {
+    return permissionsFor(
+      caller.role,
+      { grants: parseJson<Permission[]>(caller.member.grants, []), denials: parseJson<Permission[]>(caller.member.denials, []) },
+      this.settingsFor(caller.business.id),
+    );
+  }
+
+  assertPermission(caller: Caller, permission: Permission): void {
+    if (!this.permissions(caller).has(permission)) {
+      throw HttpError.forbidden(`Your role (${caller.role}) does not have permission: ${permission}`);
+    }
+  }
+
+  createBusiness(user: UserRow, input: { name: string; currency?: string; timezone?: string; locale?: string; country?: string }): { business: BusinessRow; member: MemberRow } {
+    const name = requireString(input.name, 'name', { maxLength: 120 });
+    const businessId = this.id();
+    const draft = defaultBusiness({
+      id: businessId,
+      name,
+      ownerId: user.id,
+      ...(input.currency ? { currency: input.currency } : {}),
+      ...(input.timezone ? { timezone: input.timezone } : {}),
+      ...(input.locale ? { locale: input.locale } : {}),
+      ...(input.country ? { country: input.country } : {}),
+      createdAt: this.now(),
+    });
+    const slug = this.uniqueSlug(draft.slug);
+
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO businesses (id, name, slug, currency, timezone, locale, country, farming_types, enabled_modules, settings, plan, revision, created_at, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'free', 1, ?, ?)`,
+        [
+          businessId,
+          draft.name,
+          slug,
+          draft.currency,
+          draft.timezone,
+          draft.locale,
+          draft.country,
+          JSON.stringify(draft.farmingTypes),
+          JSON.stringify(draft.enabledModules),
+          JSON.stringify({}),
+          this.now(),
+          user.id,
+        ],
+      );
+      const memberId = this.id();
+      this.db.run(
+        `INSERT INTO members (id, business_id, user_id, email, display_name, role, status, grants, denials, joined_at)
+         VALUES (?, ?, ?, ?, ?, 'owner', 'active', '[]', '[]', ?)`,
+        [memberId, businessId, user.id, user.email, user.display_name, this.now()],
+      );
+      // A default cash location so the first purchase/sale can be recorded immediately.
+      this.db.run(`INSERT INTO locations (id, business_id, name, kind, is_default, is_active, created_at) VALUES (?, ?, 'Main Store', 'STORE', 1, 1, ?)`, [
+        this.id(),
+        businessId,
+        this.now(),
+      ]);
+      this.audit({ businessId, actorId: user.id, actorEmail: user.email, action: 'business.create', entityType: 'business', entityId: businessId, detail: { name: draft.name } });
+      return { business: this.getBusiness(businessId), member: this.db.get<MemberRow>('SELECT * FROM members WHERE id = ?', [memberId]) as MemberRow };
+    });
+  }
+
+  private uniqueSlug(base: string): string {
+    let candidate = base;
+    let suffix = 1;
+    while (this.db.get('SELECT id FROM businesses WHERE slug = ?', [candidate])) {
+      suffix += 1;
+      candidate = `${base}-${suffix}`;
+    }
+    return candidate;
+  }
+
+  updateBusiness(caller: Caller, patch: Record<string, unknown>): BusinessRow {
+    this.assertPermission(caller, 'business.settings');
+    const name = patch.name === undefined ? caller.business.name : requireString(patch.name, 'name', { maxLength: 120 });
+    const currency = patch.currency === undefined ? caller.business.currency : requireString(patch.currency, 'currency', { maxLength: 8 }).toUpperCase();
+    const timezone = patch.timezone === undefined ? caller.business.timezone : requireString(patch.timezone, 'timezone', { maxLength: 64 });
+    const locale = patch.locale === undefined ? caller.business.locale : requireString(patch.locale, 'locale', { maxLength: 16 });
+    const farmingTypes = patch.farmingTypes === undefined ? parseJson<string[]>(caller.business.farming_types, []) : (patch.farmingTypes as string[]);
+
+    this.db.run('UPDATE businesses SET name = ?, currency = ?, timezone = ?, locale = ?, farming_types = ?, revision = revision + 1 WHERE id = ?', [
+      name,
+      currency,
+      timezone,
+      locale,
+      JSON.stringify(farmingTypes),
+      caller.business.id,
+    ]);
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'business.update', entityType: 'business', entityId: caller.business.id, detail: patch });
+    return this.getBusiness(caller.business.id);
+  }
+
+  listMembers(caller: Caller): unknown[] {
+    this.assertPermission(caller, 'member.view');
+    return this.db.all<MemberRow>('SELECT * FROM members WHERE business_id = ? ORDER BY joined_at', [caller.business.id]).map((m) => ({
+      id: m.id,
+      userId: m.user_id,
+      email: m.email,
+      displayName: m.display_name,
+      role: m.role,
+      status: m.status,
+      grants: parseJson<string[]>(m.grants, []),
+      denials: parseJson<string[]>(m.denials, []),
+      joinedAt: m.joined_at,
+      lastActiveAt: m.last_active_at,
+    }));
+  }
+
+  createInvite(caller: Caller, input: { role: string; email?: string | null; ttlHours?: number }): { code: string; invite: Record<string, unknown> } {
+    this.assertPermission(caller, 'member.invite');
+    const role = requireEnum(input.role, 'role', ['admin', 'manager', 'cashier', 'inventory_manager', 'farm_manager', 'viewer'] as const);
+    const email = input.email ? requireString(input.email, 'email', { maxLength: 254 }).toLowerCase() : null;
+    if (email && !isValidEmail(email)) throw HttpError.badRequest('VALIDATION', 'email is not a valid address');
+
+    const code = generateInviteCode();
+    const now = this.now();
+    const expiresAt = inviteExpiry(now, input.ttlHours ?? 72);
+    const id = this.id();
+    this.db.run(
+      `INSERT INTO invites (id, business_id, email, role, code_hash, code_prefix, status, created_at, expires_at, created_by, use_count, max_uses)
+       VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 0, 1)`,
+      [id, caller.business.id, email, role, sha256Hex(normalizeInviteCode(code)), normalizeInviteCode(code).slice(0, 4), now, expiresAt, caller.user.id],
+    );
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'member.invite', entityType: 'invite', entityId: id, detail: { role, email } });
+    return { code, invite: { id, role, email, expiresAt, codePrefix: normalizeInviteCode(code).slice(0, 4) } };
+  }
+
+  listInvites(caller: Caller): unknown[] {
+    this.assertPermission(caller, 'member.invite');
+    return this.db
+      .all<{ id: string; email: string | null; role: string; status: string; created_at: string; expires_at: string; use_count: number; max_uses: number; code_prefix: string }>(
+        'SELECT id, email, role, status, created_at, expires_at, use_count, max_uses, code_prefix FROM invites WHERE business_id = ? ORDER BY created_at DESC',
+        [caller.business.id],
+      )
+      .map((row) => ({ id: row.id, email: row.email, role: row.role, status: row.status, createdAt: row.created_at, expiresAt: row.expires_at, uses: row.use_count, maxUses: row.max_uses, codePrefix: row.code_prefix }));
+  }
+
+  revokeInvite(caller: Caller, inviteId: string): void {
+    this.assertPermission(caller, 'member.invite');
+    const changed = this.db.run(`UPDATE invites SET status = 'revoked' WHERE id = ? AND business_id = ? AND status = 'open'`, [inviteId, caller.business.id]).changes;
+    if (changed === 0) throw HttpError.notFound('Open invite not found');
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'invite.revoke', entityType: 'invite', entityId: inviteId });
+  }
+
+  /** Redeem an invite. Validated server-side and atomically, one time only. */
+  acceptInvite(user: UserRow, code: string): { businessId: string; role: string } {
+    const normalized = normalizeInviteCode(code);
+    const codeHash = sha256Hex(normalized);
+    return this.db.transaction(() => {
+      const invite = this.db.get<{
+        id: string;
+        business_id: string;
+        email: string | null;
+        role: string;
+        code_hash: string;
+        status: string;
+        expires_at: string;
+        use_count: number;
+        max_uses: number;
+      }>('SELECT * FROM invites WHERE code_hash = ?', [codeHash]);
+
+      const verdict = validateInviteRedemption({
+        code: normalized,
+        invite: invite
+          ? {
+              codeHash: invite.code_hash,
+              status: invite.status as 'open' | 'accepted' | 'expired' | 'revoked',
+              expiresAt: invite.expires_at,
+              useCount: invite.use_count,
+              maxUses: invite.max_uses,
+              email: invite.email,
+            }
+          : null,
+        now: this.now(),
+        redeemingEmail: user.email,
+        codeHashOf: (value) => sha256Hex(normalizeInviteCode(value)),
+      });
+      if (!verdict.ok) throw HttpError.badRequest('INVALID_INVITE', `This invitation cannot be used (${verdict.reason})`);
+      if (!invite) throw HttpError.badRequest('INVALID_INVITE', 'This invitation cannot be used');
+
+      const existing = this.db.get<MemberRow>('SELECT * FROM members WHERE business_id = ? AND user_id = ?', [invite.business_id, user.id]);
+      if (existing && existing.status === 'active') {
+        this.db.run(`UPDATE invites SET status = 'accepted', accepted_at = ?, accepted_by = ?, use_count = use_count + 1 WHERE id = ?`, [this.now(), user.id, invite.id]);
+        return { businessId: invite.business_id, role: existing.role };
+      }
+
+      if (existing) {
+        this.db.run(`UPDATE members SET status = 'active', role = ?, joined_at = ? WHERE id = ?`, [invite.role, this.now(), existing.id]);
+      } else {
+        this.db.run(
+          `INSERT INTO members (id, business_id, user_id, email, display_name, role, status, grants, denials, joined_at, invited_by)
+           VALUES (?, ?, ?, ?, ?, ?, 'active', '[]', '[]', ?, ?)`,
+          [this.id(), invite.business_id, user.id, user.email, user.display_name, invite.role, this.now(), null],
+        );
+      }
+      this.db.run(`UPDATE invites SET status = 'accepted', accepted_at = ?, accepted_by = ?, use_count = use_count + 1 WHERE id = ?`, [this.now(), user.id, invite.id]);
+      this.audit({ businessId: invite.business_id, actorId: user.id, actorEmail: user.email, action: 'member.join', entityType: 'member', entityId: user.id, detail: { role: invite.role } });
+      return { businessId: invite.business_id, role: invite.role };
+    });
+  }
+
+  updateMember(caller: Caller, memberId: string, patch: { role?: string; status?: string; grants?: string[]; denials?: string[] }): void {
+    const target = this.db.get<MemberRow>('SELECT * FROM members WHERE id = ? AND business_id = ?', [memberId, caller.business.id]);
+    if (!target) throw HttpError.notFound('Member not found');
+
+    const ownerCount = this.db.get<{ count: number }>(`SELECT COUNT(*) AS count FROM members WHERE business_id = ? AND role = 'owner' AND status = 'active'`, [caller.business.id])?.count ?? 0;
+    const newRole = patch.role ?? target.role;
+
+    if (patch.role && patch.role !== target.role) {
+      // Ownership transfer needs an explicit permission, matched to the domain guardrails.
+      if (newRole === 'owner' || target.role === 'owner') this.assertPermission(caller, 'business.transfer_ownership');
+      else this.assertPermission(caller, 'member.manage');
+      if (target.role === 'owner' && newRole !== 'owner' && ownerCount <= 1) {
+        throw HttpError.conflict('LAST_OWNER', 'Cannot demote the only owner. Transfer ownership to another member first.');
+      }
+    } else if (patch.status !== undefined) {
+      this.assertPermission(caller, 'member.manage');
+      if (patch.status !== 'active' && target.user_id === caller.user.id) throw HttpError.badRequest('VALIDATION', 'You cannot suspend or remove yourself');
+      if (patch.status !== 'active' && target.role === 'owner' && ownerCount <= 1) throw HttpError.conflict('LAST_OWNER', 'Cannot deactivate the only owner.');
+    } else {
+      this.assertPermission(caller, 'member.manage');
+    }
+
+    if (patch.role && newRole !== target.role) {
+      // Keep at least one owner at all times.
+      if (newRole === 'owner') this.db.run(`UPDATE members SET role = ? WHERE id = ?`, [newRole, memberId]);
+      else this.db.run(`UPDATE members SET role = ? WHERE id = ?`, [newRole, memberId]);
+    }
+    if (patch.status) this.db.run('UPDATE members SET status = ? WHERE id = ?', [patch.status, memberId]);
+    if (patch.grants) this.db.run('UPDATE members SET grants = ? WHERE id = ?', [JSON.stringify(patch.grants), memberId]);
+    if (patch.denials) this.db.run('UPDATE members SET denials = ? WHERE id = ?', [JSON.stringify(patch.denials), memberId]);
+
+    if (patch.status === 'removed' || patch.status === 'suspended') {
+      this.db.run('DELETE FROM sessions WHERE user_id = ? AND business_id = ?', [target.user_id, caller.business.id]);
+    }
+    this.audit({
+      businessId: caller.business.id,
+      actorId: caller.user.id,
+      action: 'member.update',
+      entityType: 'member',
+      entityId: memberId,
+      detail: patch,
+    });
+  }
+
+  listAuditLog(caller: Caller, limit = 100): unknown[] {
+    this.assertPermission(caller, 'audit.view');
+    return this.db
+      .all<{ id: string; actor_email: string | null; action: string; entity_type: string; entity_id: string | null; detail: string; created_at: string }>(
+        'SELECT id, actor_email, action, entity_type, entity_id, detail, created_at FROM audit_logs WHERE business_id = ? ORDER BY created_at DESC LIMIT ?',
+        [caller.business.id, Math.min(500, limit)],
+      )
+      .map((row) => ({
+        id: row.id,
+        actor: row.actor_email,
+        action: row.action,
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        detail: parseJson<Record<string, unknown>>(row.detail, {}),
+        at: row.created_at,
+      }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Units
+  // -------------------------------------------------------------------------
+
+  unitRegistry(businessId: string): UnitRegistry {
+    const rows = this.db.all<{ from_unit: string; to_unit: string; factor: string; note: string; item_id: string | null; approved_by: string; id: string }>(
+      'SELECT * FROM explicit_conversions WHERE business_id = ?',
+      [businessId],
+    );
+    const conversions: ExplicitConversion[] = rows.map((row) => ({
+      id: row.id,
+      from: row.from_unit,
+      to: row.to_unit,
+      factor: dec(row.factor),
+      note: row.note,
+      approvedBy: row.approved_by,
+      ...(row.item_id ? { itemId: row.item_id } : {}),
+    }));
+    return new UnitRegistry([], conversions);
+  }
+
+  listUnits(caller: Caller, dimension?: string): unknown[] {
+    const registry = this.unitRegistry(caller.business.id);
+    const units = dimension ? registry.list(dimension as Dimension) : registry.list();
+    return units.map((unit: UnitDef) => ({ code: unit.code, name: unit.name, nameBn: unit.nameBn ?? unit.name, dimension: unit.dimension, factor: unit.factor.toString(), integerOnly: Boolean(unit.integerOnly) }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Catalog: locations, products, customers, suppliers
+  // -------------------------------------------------------------------------
+
+  assertBusinessValue<T>(row: T | undefined, label: string): T {
+    if (!row) throw HttpError.notFound(`${label} not found`);
+    return row;
+  }
+
+  defaultLocationId(businessId: string): string {
+    const row = this.db.get<{ id: string }>(`SELECT id FROM locations WHERE business_id = ? AND is_active = 1 ORDER BY is_default DESC, created_at LIMIT 1`, [businessId]);
+    if (!row) throw HttpError.badRequest('NO_LOCATION', 'Create a stock location first (Settings → Locations)');
+    return row.id;
+  }
+
+  createLocation(caller: Caller, input: Record<string, unknown>): { id: string } {
+    this.assertPermission(caller, 'location.manage');
+    const id = this.id();
+    this.db.run('INSERT INTO locations (id, business_id, name, kind, address, is_default, is_active, created_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?)', [
+      id,
+      caller.business.id,
+      requireString(input.name, 'name', { maxLength: 80 }),
+      optionalString(input.kind, 'kind', 32) ?? 'STORE',
+      optionalString(input.address, 'address', 300),
+      this.now(),
+    ]);
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'location.create', entityType: 'location', entityId: id });
+    return { id };
+  }
+
+  listLocations(caller: Caller): unknown[] {
+    return this.db
+      .all<{ id: string; name: string; kind: string; address: string | null; is_default: number; is_active: number }>(
+        'SELECT id, name, kind, address, is_default, is_active FROM locations WHERE business_id = ? ORDER BY is_default DESC, name',
+        [caller.business.id],
+      )
+      .map((row) => ({ id: row.id, name: row.name, kind: row.kind, address: row.address, isDefault: row.is_default === 1, isActive: row.is_active === 1 }));
+  }
+
+  createProduct(caller: Caller, input: Record<string, unknown>): ProductRow {
+    this.assertPermission(caller, 'product.manage');
+    const id = this.id();
+    const now = this.now();
+    const unit = requireString(input.unit, 'unit', { maxLength: 24 });
+    this.unitRegistry(caller.business.id).getUnit(unit);
+    this.db.run(
+      `INSERT INTO products (id, business_id, sku, name, name_bn, category_id, kind, unit, sale_price, purchase_price, tax_rate, reorder_level, track_lots, is_active, revision, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+      [
+        id,
+        caller.business.id,
+        optionalString(input.sku, 'sku', 60),
+        requireString(input.name, 'name', { maxLength: 160 }),
+        optionalString(input.nameBn, 'nameBn', 160),
+        optionalString(input.categoryId, 'categoryId', 64),
+        requireEnum(input.kind ?? 'PRODUCT', 'kind', ['PRODUCT', 'SERVICE', 'INPUT', 'OUTPUT', 'LIVESTOCK'] as const),
+        unit,
+        input.salePrice === undefined || input.salePrice === null ? null : dec(String(input.salePrice)).toString(),
+        input.purchasePrice === undefined || input.purchasePrice === null ? null : dec(String(input.purchasePrice)).toString(),
+        input.taxRate === undefined || input.taxRate === null ? null : dec(String(input.taxRate)).toString(),
+        input.reorderLevel === undefined || input.reorderLevel === null ? null : dec(String(input.reorderLevel)).toString(),
+        input.trackLots ? 1 : 0,
+        now,
+        now,
+      ],
+    );
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'product.create', entityType: 'product', entityId: id });
+    return this.db.get<ProductRow>('SELECT * FROM products WHERE id = ?', [id]) as ProductRow;
+  }
+
+  updateProduct(caller: Caller, productId: string, patch: Record<string, unknown>): ProductRow {
+    this.assertPermission(caller, 'product.manage');
+    const existing = this.assertBusinessValue(this.db.get<ProductRow>('SELECT * FROM products WHERE id = ? AND business_id = ?', [productId, caller.business.id]), 'Product');
+    const fields: string[] = [];
+    const params: unknown[] = [];
+    const map: Record<string, string> = {
+      name: 'name', nameBn: 'name_bn', sku: 'sku', unit: 'unit', kind: 'kind', categoryId: 'category_id', salePrice: 'sale_price',
+      purchasePrice: 'purchase_price', taxRate: 'tax_rate', reorderLevel: 'reorder_level',
+    };
+    for (const [key, column] of Object.entries(map)) {
+      if (patch[key] === undefined) continue;
+      if (key === 'unit') this.unitRegistry(caller.business.id).getUnit(String(patch[key]));
+      const numeric = ['salePrice', 'purchasePrice', 'taxRate', 'reorderLevel'].includes(key);
+      fields.push(`${column} = ?`);
+      params.push(patch[key] === null ? null : numeric ? dec(String(patch[key])).toString() : String(patch[key]));
+    }
+    if (patch.isActive !== undefined) {
+      fields.push('is_active = ?');
+      params.push(patch.isActive ? 1 : 0);
+    }
+    if (patch.trackLots !== undefined) {
+      fields.push('track_lots = ?');
+      params.push(patch.trackLots ? 1 : 0);
+    }
+    if (fields.length === 0) return existing;
+    fields.push('revision = revision + 1', 'updated_at = ?');
+    params.push(this.now(), productId, caller.business.id);
+    this.db.run(`UPDATE products SET ${fields.join(', ')} WHERE id = ? AND business_id = ?`, params);
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'product.update', entityType: 'product', entityId: productId, detail: patch });
+    return this.db.get<ProductRow>('SELECT * FROM products WHERE id = ?', [productId]) as ProductRow;
+  }
+
+  listProducts(caller: Caller, options: { search?: string; kind?: string; activeOnly?: boolean } = {}): unknown[] {
+    const clauses = ['business_id = ?', 'deleted_at IS NULL'];
+    const params: unknown[] = [caller.business.id];
+    if (options.search) {
+      clauses.push('(name LIKE ? OR name_bn LIKE ? OR sku LIKE ?)');
+      const like = `%${options.search}%`;
+      params.push(like, like, like);
+    }
+    if (options.kind) {
+      clauses.push('kind = ?');
+      params.push(options.kind);
+    }
+    if (options.activeOnly !== false) clauses.push('is_active = 1');
+    const rows = this.db.all<ProductRow>(`SELECT * FROM products WHERE ${clauses.join(' AND ')} ORDER BY name LIMIT 500`, params);
+    return rows.map((row) => this.productView(row, caller));
+  }
+
+  productView(row: ProductRow, caller: Caller): Record<string, unknown> {
+    const showCost = this.permissions(caller).has('purchase.cost.view');
+    const balance = this.stockBalance(caller.business.id, row.id);
+    return {
+      id: row.id,
+      sku: row.sku,
+      name: row.name,
+      nameBn: row.name_bn,
+      kind: row.kind,
+      unit: row.unit,
+      categoryId: row.category_id,
+      isActive: row.is_active === 1,
+      trackLots: row.track_lots === 1,
+      revision: row.revision,
+      salePrice: row.sale_price,
+      reorderLevel: row.reorder_level,
+      ...(showCost ? { purchasePrice: row.purchase_price, taxRate: row.tax_rate } : {}),
+      onHand: balance.quantity.toString(),
+      onHandUnit: row.unit,
+    };
+  }
+
+  createCustomer(caller: Caller, input: Record<string, unknown>): { id: string } {
+    this.assertPermission(caller, 'customer.manage');
+    const id = this.id();
+    const now = this.now();
+    this.db.run(
+      `INSERT INTO customers (id, business_id, name, phone, email, address, opening_balance, credit_limit, is_active, revision, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+      [
+        id,
+        caller.business.id,
+        requireString(input.name, 'name', { maxLength: 160 }),
+        optionalString(input.phone, 'phone', 32),
+        optionalString(input.email, 'email', 254),
+        optionalString(input.address, 'address', 400),
+        input.openingBalance === undefined ? '0' : dec(String(input.openingBalance)).toString(),
+        input.creditLimit === undefined || input.creditLimit === null ? null : dec(String(input.creditLimit)).toString(),
+        now,
+        now,
+      ],
+    );
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'customer.create', entityType: 'customer', entityId: id });
+    return { id };
+  }
+
+  listCustomers(caller: Caller, search?: string): unknown[] {
+    this.assertPermission(caller, 'customer.view');
+    const like = `%${search ?? ''}%`;
+    return this.db
+      .all<{ id: string; name: string; phone: string | null; email: string | null; opening_balance: string }>(
+        'SELECT id, name, phone, email, opening_balance FROM customers WHERE business_id = ? AND (name LIKE ? OR phone LIKE ?) AND is_active = 1 ORDER BY name LIMIT 500',
+        [caller.business.id, like, like],
+      )
+      .map((row) => ({ id: row.id, name: row.name, phone: row.phone, email: row.email, receivable: this.receivableFor(caller.business.id, row.id).amount.toString() }));
+  }
+
+  createSupplier(caller: Caller, input: Record<string, unknown>): { id: string } {
+    this.assertPermission(caller, 'supplier.manage');
+    const id = this.id();
+    const now = this.now();
+    this.db.run(
+      `INSERT INTO suppliers (id, business_id, name, phone, email, address, opening_balance, is_active, revision, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+      [
+        id,
+        caller.business.id,
+        requireString(input.name, 'name', { maxLength: 160 }),
+        optionalString(input.phone, 'phone', 32),
+        optionalString(input.email, 'email', 254),
+        optionalString(input.address, 'address', 400),
+        input.openingBalance === undefined ? '0' : dec(String(input.openingBalance)).toString(),
+        now,
+        now,
+      ],
+    );
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'supplier.create', entityType: 'supplier', entityId: id });
+    return { id };
+  }
+
+  listSuppliers(caller: Caller, search?: string): unknown[] {
+    this.assertPermission(caller, 'supplier.view');
+    const like = `%${search ?? ''}%`;
+    return this.db
+      .all<{ id: string; name: string; phone: string | null; opening_balance: string }>(
+        'SELECT id, name, phone, opening_balance FROM suppliers WHERE business_id = ? AND name LIKE ? AND is_active = 1 ORDER BY name LIMIT 500',
+        [caller.business.id, like],
+      )
+      .map((row) => ({ id: row.id, name: row.name, phone: row.phone, payable: this.payableFor(caller.business.id, row.id).amount.toString() }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Ledger + stock helpers
+  // -------------------------------------------------------------------------
+
+  journalEntries(businessId: string, range: { from?: string; to?: string } = {}): JournalEntry[] {
+    const clauses = ['e.business_id = ?'];
+    const params: unknown[] = [businessId];
+    if (range.from) {
+      clauses.push('e.document_date >= ?');
+      params.push(range.from);
+    }
+    if (range.to) {
+      clauses.push('e.document_date <= ?');
+      params.push(range.to);
+    }
+    const entries = this.db.all<{ id: string; document_date: string; reference: string; description: string; source_type: string; source_id: string; currency: string; posted_by: string; device_id: string | null; event_id: string; reversal_of: string | null; created_at: string }>(
+      `SELECT * FROM journal_entries e WHERE ${clauses.join(' AND ')} ORDER BY document_date, created_at`,
+      params,
+    );
+    if (entries.length === 0) return [];
+    const ids = entries.map((e) => e.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const lines = this.db.all<{ id: string; entry_id: string; account: string; debit: string; credit: string; currency: string; memo: string | null; partner_id: string | null; cost_center: string | null }>(
+      `SELECT * FROM journal_lines WHERE entry_id IN (${placeholders}) ORDER BY rowid`,
+      ids,
+    );
+    const byEntry = new Map<string, JournalLine[]>();
+    for (const line of lines) {
+      const list = byEntry.get(line.entry_id) ?? [];
+      list.push({
+        account: line.account,
+        debit: money(line.currency, line.debit),
+        credit: money(line.currency, line.credit),
+        ...(line.memo ? { memo: line.memo } : {}),
+        ...(line.partner_id ? { partnerId: line.partner_id } : {}),
+      });
+      byEntry.set(line.entry_id, list);
+    }
+    return entries.map((entry) => ({
+      id: entry.id,
+      businessId,
+      date: entry.document_date,
+      reference: entry.reference,
+      description: entry.description,
+      sourceType: entry.source_type,
+      sourceId: entry.source_id,
+      lines: byEntry.get(entry.id) ?? [],
+      currency: entry.currency,
+      postedBy: entry.posted_by,
+      ...(entry.device_id ? { deviceId: entry.device_id } : {}),
+      eventId: entry.event_id,
+      createdAt: entry.created_at,
+      reversalOf: entry.reversal_of,
+    }));
+  }
+
+  /** Persist a validated journal entry, refusing duplicates and unbalanced entries. */
+  postJournal(caller: Caller, entry: JournalEntry, options: { allowDuplicateReference?: boolean } = {}): string {
+    const validation = validateJournalEntry(entry);
+    if (!validation.ok) throw HttpError.badRequest('UNBALANCED_ENTRY', `Journal entry rejected: ${validation.errors.join('; ')}`);
+    const eventId = entry.eventId ?? entry.id;
+    const existing = this.db.get<{ id: string }>('SELECT id FROM journal_entries WHERE event_id = ?', [eventId]);
+    if (existing) return existing.id;
+
+    const entryId = this.id();
+    this.db.run(
+      `INSERT INTO journal_entries (id, business_id, document_date, reference, description, source_type, source_id, currency, posted_by, device_id, event_id, reversal_of, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        entryId,
+        caller.business.id,
+        entry.date,
+        options.allowDuplicateReference ? `${entry.reference}#${entryId.slice(0, 8)}` : entry.reference,
+        entry.description,
+        entry.sourceType,
+        entry.sourceId,
+        entry.currency,
+        caller.user.id,
+        entry.deviceId ?? null,
+        eventId,
+        entry.reversalOf ?? null,
+        this.now(),
+      ],
+    );
+    for (const line of entry.lines) {
+      this.db.run(
+        `INSERT INTO journal_lines (id, business_id, entry_id, account, debit, credit, currency, memo, partner_id, cost_center)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          this.id(),
+          caller.business.id,
+          entryId,
+          line.account,
+          line.debit.amount.toString(),
+          line.credit.amount.toString(),
+          entry.currency,
+          line.memo ?? null,
+          line.partnerId ?? null,
+          line.costCenter ?? null,
+        ],
+      );
+    }
+    return entryId;
+  }
+
+  private movements(businessId: string, itemId?: string): MovementRow[] {
+    const clauses = ['business_id = ?'];
+    const params: unknown[] = [businessId];
+    if (itemId) {
+      clauses.push('item_id = ?');
+      params.push(itemId);
+    }
+    return this.db.all<MovementRow>(`SELECT * FROM stock_movements WHERE ${clauses.join(' AND ')} ORDER BY occurred_at, created_at, rowid`, params);
+  }
+
+  toDomainMovements(rows: readonly MovementRow[]): StockMovement[] {
+    return rows.map((row) => ({
+      id: row.id,
+      businessId: row.business_id,
+      itemId: row.item_id,
+      locationId: row.location_id,
+      direction: row.direction,
+      quantity: dec(row.quantity),
+      unit: row.unit,
+      unitCost: money(row.currency, row.unit_cost),
+      lotId: row.lot_id,
+      expiryDate: row.expiry_date,
+      sourceType: row.source_type as never,
+      sourceId: row.source_id,
+      actorId: row.actor_id,
+      deviceId: row.device_id ?? '',
+      eventId: row.event_id,
+      idempotencyKey: row.idempotency_key,
+      reversalOf: row.reversal_of,
+      reason: row.reason,
+      occurredAt: row.occurred_at,
+      createdAt: row.created_at,
+    }));
+  }
+
+  stockBalance(businessId: string, itemId: string, locationId?: string): { quantity: Decimal; unit: string } {
+    const rows = this.movements(businessId, itemId).filter((r) => !locationId || r.location_id === locationId);
+    let quantity = Decimal.ZERO;
+    let unit = '';
+    for (const row of rows) {
+      unit = unit || row.unit;
+      quantity = row.direction === 'IN' ? quantity.add(dec(row.quantity)) : quantity.sub(dec(row.quantity));
+    }
+    return { quantity, unit };
+  }
+
+  itemUnitCost(businessId: string, itemId: string, currency: string): Money {
+    const rows = this.movements(businessId, itemId);
+    if (rows.length === 0) return zeroMoney(currency);
+    return currentUnitCost(this.toDomainMovements(rows), { itemId, currency });
+  }
+
+  recordMovement(
+    caller: Caller,
+    input: {
+      itemId: string;
+      locationId?: string;
+      direction: 'IN' | 'OUT';
+      quantity: Decimal;
+      unit: string;
+      unitCost: Money;
+      sourceType: string;
+      sourceId: string;
+      lotId?: string | null;
+      expiryDate?: string | null;
+      reason?: string | null;
+      occurredAt?: string;
+      allowNegative?: boolean;
+    },
+  ): string {
+    const locationId = input.locationId ?? this.defaultLocationId(caller.business.id);
+    const rows = this.movements(caller.business.id, input.itemId);
+    const check = checkStockImpact(this.toDomainMovements(rows), {
+      itemId: input.itemId,
+      locationId,
+      direction: input.direction,
+      quantity: input.quantity,
+      unit: input.unit,
+    }, { allowNegative: input.allowNegative === true });
+    if (!check.ok) {
+      throw new StockError(check.code ?? 'NEGATIVE_STOCK', check.message ?? 'Stock check failed');
+    }
+    const id = this.id();
+    this.db.run(
+      `INSERT INTO stock_movements (id, business_id, item_id, location_id, direction, quantity, unit, unit_cost, currency, lot_id, expiry_date, source_type, source_id, actor_id, device_id, event_id, idempotency_key, reversal_of, reason, occurred_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        caller.business.id,
+        input.itemId,
+        locationId,
+        input.direction,
+        input.quantity.toString(),
+        input.unit,
+        input.unitCost.amount.toString(),
+        input.unitCost.currency,
+        input.lotId ?? null,
+        input.expiryDate ?? null,
+        input.sourceType,
+        input.sourceId,
+        caller.user.id,
+        null,
+        this.id(),
+        `mv:${id}`,
+        null,
+        input.reason ?? null,
+        input.occurredAt ?? this.now(),
+        this.now(),
+      ],
+    );
+    return id;
+  }
+
+  listStock(caller: Caller): unknown[] {
+    this.assertPermission(caller, 'inventory.view');
+    const showCost = this.permissions(caller).has('purchase.cost.view');
+    const products = this.db.all<ProductRow>(`SELECT * FROM products WHERE business_id = ? AND is_active = 1 AND kind != 'SERVICE' ORDER BY name`, [caller.business.id]);
+    return products.map((product) => {
+      const balance = this.stockBalance(caller.business.id, product.id);
+      const value = this.stockValue(caller.business.id, product.id, caller.business.currency);
+      return {
+        itemId: product.id,
+        name: product.name,
+        unit: product.unit,
+        onHand: balance.quantity.toString(),
+        reorderLevel: product.reorder_level,
+        belowReorder: product.reorder_level ? balance.quantity.lte(dec(product.reorder_level)) : false,
+        ...(showCost ? { unitCost: value.unitCost.amount.toString(), value: value.value.amount.toString() } : {}),
+      };
+    });
+  }
+
+  stockValue(businessId: string, itemId: string, currency: string): { quantity: Decimal; value: Money; unitCost: Money } {
+    const rows = this.movements(businessId, itemId);
+    if (rows.length === 0) return { quantity: Decimal.ZERO, value: zeroMoney(currency), unitCost: zeroMoney(currency) };
+    const valuation = weightedAverageValuation(this.toDomainMovements(rows), { itemId, currency });
+    return { quantity: valuation.quantity, value: valuation.value, unitCost: valuation.unitCost };
+  }
+
+  listMovements(caller: Caller, itemId?: string): unknown[] {
+    this.assertPermission(caller, 'inventory.view');
+    const rows = itemId ? this.movements(caller.business.id, itemId) : this.movements(caller.business.id);
+    return rows
+      .slice(-500)
+      .reverse()
+      .map((row) => ({
+        id: row.id,
+        itemId: row.item_id,
+        locationId: row.location_id,
+        direction: row.direction,
+        quantity: row.quantity,
+        unit: row.unit,
+        sourceType: row.source_type,
+        sourceId: row.source_id,
+        reason: row.reason,
+        occurredAt: row.occurred_at,
+      }));
+  }
+
+  receivableFor(businessId: string, customerId: string): Money {
+    const entries = this.journalEntries(businessId);
+    const sales = this.db.all<{ net: string; cash_received: string; currency: string }>('SELECT net, cash_received, currency FROM sales WHERE business_id = ? AND customer_id = ?', [businessId, customerId]);
+    const receipts = this.db.all<{ amount: string; currency: string }>(`SELECT amount, currency FROM payments WHERE business_id = ? AND party_id = ? AND kind = 'CUSTOMER_RECEIPT'`, [businessId, customerId]);
+    const currency = sales[0]?.currency ?? receipts[0]?.currency ?? 'BDT';
+    void entries;
+    const billed = sales.reduce<Money>((acc, row) => addMoney(acc, money(row.currency, dec(row.net).sub(dec(row.cash_received)))), zeroMoney(currency));
+    const paid = receipts.reduce<Money>((acc, row) => addMoney(acc, money(row.currency, row.amount)), zeroMoney(currency));
+    return subMoney(billed, paid);
+  }
+
+  payableFor(businessId: string, supplierId: string): Money {
+    const bills = this.db.all<{ payable: string; currency: string }>('SELECT payable, currency FROM purchases WHERE business_id = ? AND supplier_id = ?', [businessId, supplierId]);
+    const payments = this.db.all<{ amount: string; currency: string }>(`SELECT amount, currency FROM payments WHERE business_id = ? AND party_id = ? AND kind = 'SUPPLIER_PAYMENT'`, [businessId, supplierId]);
+    const currency = bills[0]?.currency ?? payments[0]?.currency ?? 'BDT';
+    const owed = bills.reduce<Money>((acc, row) => addMoney(acc, money(row.currency, row.payable)), zeroMoney(currency));
+    const paid = payments.reduce<Money>((acc, row) => addMoney(acc, money(row.currency, row.amount)), zeroMoney(currency));
+    return subMoney(owed, paid);
+  }
+
+  // -------------------------------------------------------------------------
+  // Commerce: purchases, sales, payments
+  // -------------------------------------------------------------------------
+
+  createPurchase(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'purchase.manage');
+    const body = asRecord(input, 'purchase');
+    const lines = Array.isArray(body.lines) ? body.lines : [];
+    if (lines.length === 0) throw HttpError.badRequest('VALIDATION', 'At least one purchase line is required');
+    const documentDate = requireString(body.documentDate, 'documentDate', { maxLength: 10 });
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const supplierId = optionalString(body.supplierId, 'supplierId', 64);
+    if (supplierId) this.assertBusinessValue(this.db.get('SELECT id FROM suppliers WHERE id = ? AND business_id = ?', [supplierId, caller.business.id]), 'Supplier');
+    const locationId = optionalString(body.locationId, 'locationId', 64) ?? this.defaultLocationId(caller.business.id);
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'purchase', 'PUR', documentDate);
+    const eventId = randomUUID();
+    const now = this.now();
+
+    return this.db.transaction(() => {
+      let inventoryValue = zeroMoney(currency);
+      let taxTotal = zeroMoney(currency);
+      const prepared: { productId: string | null; quantity: Decimal; unit: string; unitCost: Money; lineTotal: Money; lotNo: string | null; expiryDate: string | null }[] = [];
+
+      for (const raw of lines) {
+        const line = asRecord(raw, 'purchase line');
+        const quantity = dec(String(line.quantity ?? '0'));
+        if (!quantity.isPositive()) throw HttpError.badRequest('VALIDATION', 'Purchase quantity must be greater than zero');
+        const unit = requireString(line.unit, 'unit', { maxLength: 24 });
+        const unitCost = money(currency, String(line.unitCost ?? '0'));
+        const lineTotal = mulMoney(unitCost, quantity);
+        const tax = money(currency, String(line.tax ?? '0'));
+        inventoryValue = addMoney(inventoryValue, lineTotal);
+        taxTotal = addMoney(taxTotal, tax);
+        prepared.push({
+          productId: optionalString(line.productId, 'productId', 64),
+          quantity,
+          unit,
+          unitCost,
+          lineTotal,
+          lotNo: optionalString(line.lotNo, 'lotNo', 60),
+          expiryDate: optionalString(line.expiryDate, 'expiryDate', 10),
+        });
+      }
+
+      const paid = money(currency, String(body.paid ?? '0'));
+      const total = addMoney(inventoryValue, taxTotal);
+      const payable = subMoney(total, paid);
+      const purchaseId = this.id();
+
+      this.db.run(
+        `INSERT INTO purchases (id, business_id, reference, supplier_id, document_date, currency, subtotal, discount, tax, total, paid, payable, status, note, revision, created_by, device_id, event_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '0', ?, ?, ?, ?, 'POSTED', ?, 1, ?, ?, ?, ?, ?)`,
+        [
+          purchaseId,
+          caller.business.id,
+          reference,
+          supplierId,
+          documentDate,
+          currency,
+          inventoryValue.amount.toString(),
+          taxTotal.amount.toString(),
+          total.amount.toString(),
+          paid.amount.toString(),
+          payable.amount.toString(),
+          optionalString(body.note, 'note', 500),
+          caller.user.id,
+          optionalString(body.deviceId, 'deviceId', 64),
+          eventId,
+          now,
+          now,
+        ],
+      );
+
+      for (const line of prepared) {
+        if (!line.productId) throw HttpError.badRequest('VALIDATION', 'Each purchase line needs a productId in this build');
+        const product = this.assertBusinessValue(this.db.get<ProductRow>('SELECT * FROM products WHERE id = ? AND business_id = ?', [line.productId, caller.business.id]), 'Product');
+        this.db.run(
+          `INSERT INTO purchase_lines (id, business_id, purchase_id, product_id, description, quantity, unit, unit_cost, discount, tax, line_total, location_id, lot_no, expiry_date)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, '0', '0', ?, ?, ?, ?)`,
+          [this.id(), caller.business.id, purchaseId, line.productId, product.name, line.quantity.toString(), line.unit, line.unitCost.amount.toString(), line.lineTotal.amount.toString(), locationId, line.lotNo, line.expiryDate],
+        );
+        let lotId: string | null = null;
+        if (product.track_lots === 1 && line.lotNo) {
+          lotId = this.id();
+          this.db.run('INSERT INTO stock_lots (id, business_id, item_id, location_id, lot_no, unit_cost, currency, received_at, expiry_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+            lotId,
+            caller.business.id,
+            line.productId,
+            locationId,
+            line.lotNo,
+            line.unitCost.amount.toString(),
+            currency,
+            documentDate,
+            line.expiryDate,
+            now,
+          ]);
+        }
+        this.recordMovement(caller, {
+          itemId: line.productId,
+          locationId,
+          direction: 'IN',
+          quantity: line.quantity,
+          unit: line.unit,
+          unitCost: line.unitCost,
+          sourceType: 'PURCHASE',
+          sourceId: reference,
+          lotId,
+          expiryDate: line.expiryDate,
+          occurredAt: documentDate,
+        });
+      }
+
+      const entry = buildPurchasePosting({
+        businessId: caller.business.id,
+        date: documentDate,
+        reference,
+        currency,
+        inventoryValue,
+        inputTax: taxTotal,
+        paid,
+        cashAccount: optionalString(body.accountCode, 'accountCode', 8) ?? '1000',
+        postedBy: caller.user.id,
+        eventId: `${eventId}:journal`,
+        description: `Purchase ${reference}`,
+      });
+      this.postJournal(caller, entry);
+
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'purchase.post', entityType: 'purchase', entityId: purchaseId, detail: { reference, total: total.amount.toString() } });
+      return { id: purchaseId, reference, total: total.amount.toString(), payable: payable.amount.toString(), paid: paid.amount.toString(), currency };
+    });
+  }
+
+  createSale(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'sale.create');
+    const body = asRecord(input, 'sale');
+    const lines = Array.isArray(body.lines) ? body.lines : [];
+    if (lines.length === 0) throw HttpError.badRequest('VALIDATION', 'At least one sale line is required');
+    const documentDate = requireString(body.documentDate, 'documentDate', { maxLength: 10 });
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const customerId = optionalString(body.customerId, 'customerId', 64);
+    if (customerId) this.assertBusinessValue(this.db.get('SELECT id FROM customers WHERE id = ? AND business_id = ?', [customerId, caller.business.id]), 'Customer');
+    const locationId = optionalString(body.locationId, 'locationId', 64) ?? this.defaultLocationId(caller.business.id);
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'sale', 'SAL', documentDate);
+    const headerDiscount = money(currency, String(body.discount ?? '0'));
+    if (headerDiscount.amount.isPositive()) this.assertPermission(caller, 'sale.discount.apply');
+    const eventId = randomUUID();
+    const now = this.now();
+
+    return this.db.transaction(() => {
+      let revenue = zeroMoney(currency);
+      let lineDiscountTotal = zeroMoney(currency);
+      let taxTotal = zeroMoney(currency);
+      let cogs = zeroMoney(currency);
+      const prepared: { product: ProductRow | null; quantity: Decimal; unit: string; unitPrice: Money; lineTotal: Money; unitCost: Money; description: string }[] = [];
+
+      for (const raw of lines) {
+        const line = asRecord(raw, 'sale line');
+        const quantity = dec(String(line.quantity ?? '0'));
+        if (!quantity.isPositive()) throw HttpError.badRequest('VALIDATION', 'Sale quantity must be greater than zero');
+        const unit = requireString(line.unit, 'unit', { maxLength: 24 });
+        const unitPrice = money(currency, String(line.unitPrice ?? '0'));
+        const lineDiscount = money(currency, String(line.discount ?? '0'));
+        const lineTax = money(currency, String(line.tax ?? '0'));
+        const productId = optionalString(line.productId, 'productId', 64);
+        const product = productId ? this.assertBusinessValue(this.db.get<ProductRow>('SELECT * FROM products WHERE id = ? AND business_id = ?', [productId, caller.business.id]), 'Product') : null;
+        const unitCost = product ? this.itemUnitCost(caller.business.id, product.id, currency) : zeroMoney(currency);
+
+        revenue = addMoney(revenue, mulMoney(unitPrice, quantity));
+        lineDiscountTotal = addMoney(lineDiscountTotal, lineDiscount);
+        taxTotal = addMoney(taxTotal, lineTax);
+        if (product && product.kind !== 'SERVICE') cogs = addMoney(cogs, mulMoney(unitCost, quantity));
+        prepared.push({ product, quantity, unit, unitPrice, lineTotal: subMoney(mulMoney(unitPrice, quantity), lineDiscount), unitCost, description: String(line.description ?? product?.name ?? 'Item') });
+      }
+
+      const discountTotal = addMoney(headerDiscount, lineDiscountTotal);
+      const net = subMoney(addMoney(revenue, taxTotal), discountTotal);
+      const cashReceived = money(currency, String(body.cashReceived ?? net.amount.toString()));
+      const receivable = subMoney(net, cashReceived);
+      const saleId = this.id();
+
+      this.db.run(
+        `INSERT INTO sales (id, business_id, reference, customer_id, document_date, currency, gross, discount, tax, net, cash_received, receivable, cogs, status, note, revision, created_by, device_id, event_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'POSTED', ?, 1, ?, ?, ?, ?, ?)`,
+        [
+          saleId,
+          caller.business.id,
+          reference,
+          customerId,
+          documentDate,
+          currency,
+          revenue.amount.toString(),
+          discountTotal.amount.toString(),
+          taxTotal.amount.toString(),
+          net.amount.toString(),
+          cashReceived.amount.toString(),
+          receivable.amount.toString(),
+          cogs.amount.toString(),
+          optionalString(body.note, 'note', 500),
+          caller.user.id,
+          optionalString(body.deviceId, 'deviceId', 64),
+          eventId,
+          now,
+          now,
+        ],
+      );
+
+      for (const line of prepared) {
+        this.db.run(
+          `INSERT INTO sale_lines (id, business_id, sale_id, product_id, description, quantity, unit, unit_price, discount, tax, line_total, unit_cost, location_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            this.id(),
+            caller.business.id,
+            saleId,
+            line.product?.id ?? null,
+            line.description,
+            line.quantity.toString(),
+            line.unit,
+            line.unitPrice.amount.toString(),
+            '0',
+            '0',
+            line.lineTotal.amount.toString(),
+            line.unitCost.amount.toString(),
+            locationId,
+          ],
+        );
+        if (line.product && line.product.kind !== 'SERVICE') {
+          // Negative stock is refused by DEFAULT for every role. An override
+          // needs an explicit request, the approval permission and a reason.
+          const allowNegative = body.allowNegative === true;
+          if (allowNegative) {
+            this.assertPermission(caller, 'inventory.adjust.approve');
+            if (!optionalString(body.negativeReason, 'negativeReason', 400)) {
+              throw HttpError.badRequest('VALIDATION', 'negativeReason is required when overriding negative stock');
+            }
+          }
+          this.recordMovement(caller, {
+            itemId: line.product.id,
+            locationId,
+            direction: 'OUT',
+            quantity: line.quantity,
+            unit: line.unit,
+            unitCost: line.unitCost,
+            sourceType: 'SALE',
+            sourceId: reference,
+            occurredAt: documentDate,
+            allowNegative,
+            reason: allowNegative ? `Negative-stock override: ${String(body.negativeReason)}` : null,
+          });
+        }
+      }
+
+      const entry = buildSalePosting({
+        businessId: caller.business.id,
+        date: documentDate,
+        reference,
+        currency,
+        revenue,
+        discount: discountTotal,
+        tax: taxTotal,
+        cashReceived,
+        cogs,
+        cashAccount: optionalString(body.accountCode, 'accountCode', 8) ?? '1000',
+        postedBy: caller.user.id,
+        eventId: `${eventId}:journal`,
+        description: `Sale ${reference}`,
+      });
+      this.postJournal(caller, entry);
+
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'sale.post', entityType: 'sale', entityId: saleId, detail: { reference, net: net.amount.toString(), cogs: cogs.amount.toString() } });
+      return { id: saleId, reference, gross: revenue.amount.toString(), discount: discountTotal.amount.toString(), net: net.amount.toString(), cashReceived: cashReceived.amount.toString(), receivable: receivable.amount.toString(), cogs: cogs.amount.toString(), currency };
+    });
+  }
+
+  recordCustomerReceipt(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'finance.manage');
+    const body = asRecord(input, 'receipt');
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const amount = money(currency, String(body.amount ?? '0'));
+    if (!amount.amount.isPositive()) throw HttpError.badRequest('VALIDATION', 'Receipt amount must be greater than zero');
+    const documentDate = requireString(body.documentDate, 'documentDate', { maxLength: 10 });
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'receipt', 'RCP', documentDate);
+    const customerId = optionalString(body.customerId, 'customerId', 64);
+    const eventId = randomUUID();
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO payments (id, business_id, kind, party_type, party_id, document_date, currency, amount, account_code, reference, note, created_by, device_id, event_id, created_at)
+         VALUES (?, ?, 'CUSTOMER_RECEIPT', 'CUSTOMER', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [this.id(), caller.business.id, customerId, documentDate, currency, amount.amount.toString(), optionalString(body.accountCode, 'accountCode', 8) ?? '1000', reference, optionalString(body.note, 'note', 400), caller.user.id, null, eventId, this.now()],
+      );
+      const entry = buildCustomerReceiptPosting({
+        businessId: caller.business.id,
+        date: documentDate,
+        reference,
+        currency,
+        amount,
+        cashAccount: optionalString(body.accountCode, 'accountCode', 8) ?? '1000',
+        postedBy: caller.user.id,
+        eventId: `${eventId}:journal`,
+      });
+      this.postJournal(caller, entry);
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'receipt.post', entityType: 'payment', entityId: reference, detail: { amount: amount.amount.toString() } });
+      return { reference, amount: amount.amount.toString(), receivableRemaining: customerId ? this.receivableFor(caller.business.id, customerId).amount.toString() : null };
+    });
+  }
+
+  recordSupplierPayment(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'finance.manage');
+    const body = asRecord(input, 'payment');
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const amount = money(currency, String(body.amount ?? '0'));
+    if (!amount.amount.isPositive()) throw HttpError.badRequest('VALIDATION', 'Payment amount must be greater than zero');
+    const documentDate = requireString(body.documentDate, 'documentDate', { maxLength: 10 });
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'payment', 'PAY', documentDate);
+    const supplierId = optionalString(body.supplierId, 'supplierId', 64);
+    const eventId = randomUUID();
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO payments (id, business_id, kind, party_type, party_id, document_date, currency, amount, account_code, reference, note, created_by, device_id, event_id, created_at)
+         VALUES (?, ?, 'SUPPLIER_PAYMENT', 'SUPPLIER', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [this.id(), caller.business.id, supplierId, documentDate, currency, amount.amount.toString(), optionalString(body.accountCode, 'accountCode', 8) ?? '1000', reference, optionalString(body.note, 'note', 400), caller.user.id, null, eventId, this.now()],
+      );
+      const entry = buildSupplierPaymentPosting({
+        businessId: caller.business.id,
+        date: documentDate,
+        reference,
+        currency,
+        amount,
+        cashAccount: optionalString(body.accountCode, 'accountCode', 8) ?? '1000',
+        postedBy: caller.user.id,
+        eventId: `${eventId}:journal`,
+      });
+      this.postJournal(caller, entry);
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'supplier_payment.post', entityType: 'payment', entityId: reference, detail: { amount: amount.amount.toString() } });
+      return { reference, amount: amount.amount.toString(), payableRemaining: supplierId ? this.payableFor(caller.business.id, supplierId).amount.toString() : null };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Finance
+  // -------------------------------------------------------------------------
+
+  recordTransfer(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'finance.manage');
+    const body = asRecord(input, 'transfer');
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const amount = money(currency, String(body.amount ?? '0'));
+    if (!amount.amount.isPositive()) throw HttpError.badRequest('VALIDATION', 'Transfer amount must be greater than zero');
+    const fromAccount = requireString(body.fromAccount, 'fromAccount', { maxLength: 8 });
+    const toAccount = requireString(body.toAccount, 'toAccount', { maxLength: 8 });
+    const documentDate = requireString(body.documentDate, 'documentDate', { maxLength: 10 });
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'transfer', 'TRF', documentDate);
+    const eventId = randomUUID();
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO account_transfers (id, business_id, document_date, currency, amount, from_account, to_account, reference, note, created_by, event_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [this.id(), caller.business.id, documentDate, currency, amount.amount.toString(), fromAccount, toAccount, reference, optionalString(body.note, 'note', 400), caller.user.id, eventId, this.now()],
+      );
+      const entry = buildTransferPosting({ businessId: caller.business.id, date: documentDate, reference, currency, amount, fromAccount, toAccount, postedBy: caller.user.id, eventId: `${eventId}:journal` });
+      this.postJournal(caller, entry);
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'transfer.post', entityType: 'transfer', entityId: reference, detail: { amount: amount.amount.toString(), fromAccount, toAccount } });
+      return { reference, amount: amount.amount.toString() };
+    });
+  }
+
+  recordIncomeExpense(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'finance.manage');
+    const body = asRecord(input, 'income/expense');
+    const kind = requireEnum(body.kind, 'kind', ['INCOME', 'EXPENSE'] as const);
+    const categoryAccount = requireString(body.categoryAccount, 'categoryAccount', { maxLength: 8 });
+    const account = ACCOUNT[categoryAccount];
+    if (!account) throw HttpError.badRequest('VALIDATION', `Unknown account code ${categoryAccount}`);
+    const expectedType = kind === 'INCOME' ? 'REVENUE' : 'EXPENSE';
+    if (account.type !== expectedType) throw HttpError.badRequest('VALIDATION', `${categoryAccount} is a ${account.type} account, not ${expectedType}`);
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const amount = money(currency, String(body.amount ?? '0'));
+    if (!amount.amount.isPositive()) throw HttpError.badRequest('VALIDATION', 'Amount must be greater than zero');
+    const documentDate = requireString(body.documentDate, 'documentDate', { maxLength: 10 });
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, kind.toLowerCase(), kind === 'INCOME' ? 'INC' : 'EXP', documentDate);
+    const paid = body.paid === undefined ? true : Boolean(body.paid);
+    const eventId = randomUUID();
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO income_expenses (id, business_id, kind, category_account, document_date, currency, amount, account_code, paid, reference, note, created_by, event_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [this.id(), caller.business.id, kind, categoryAccount, documentDate, currency, amount.amount.toString(), optionalString(body.accountCode, 'accountCode', 8) ?? '1000', paid ? 1 : 0, reference, optionalString(body.note, 'note', 400), caller.user.id, eventId, this.now()],
+      );
+      const entry = buildIncomeExpensePosting({
+        businessId: caller.business.id,
+        date: documentDate,
+        reference,
+        currency,
+        amount,
+        categoryAccount,
+        cashAccount: optionalString(body.accountCode, 'accountCode', 8) ?? '1000',
+        paid,
+        postedBy: caller.user.id,
+        eventId: `${eventId}:journal`,
+        description: optionalString(body.note, 'note', 200) ?? `${kind} ${reference}`,
+      });
+      this.postJournal(caller, entry);
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: `${kind.toLowerCase()}.post`, entityType: 'income_expense', entityId: reference, detail: { amount: amount.amount.toString(), categoryAccount } });
+      return { reference, amount: amount.amount.toString() };
+    });
+  }
+
+  recordPartnerCapital(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    const body = asRecord(input, 'partner capital');
+    const memberId = requireString(body.memberId, 'memberId', { maxLength: 64 });
+    const isSelf = memberId === caller.member.id;
+    // A partner may record their own contribution; managing others needs the permission.
+    if (!isSelf) this.assertPermission(caller, 'partner_capital.manage');
+    else this.assertPermission(caller, 'partner_capital.view');
+    const member = this.assertBusinessValue(this.db.get<MemberRow>('SELECT * FROM members WHERE id = ? AND business_id = ?', [memberId, caller.business.id]), 'Member');
+    const kind = requireEnum(body.kind, 'kind', ['CONTRIBUTION', 'WITHDRAWAL'] as const);
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const amount = money(currency, String(body.amount ?? '0'));
+    if (!amount.amount.isPositive()) throw HttpError.badRequest('VALIDATION', 'Amount must be greater than zero');
+    const documentDate = requireString(body.documentDate, 'documentDate', { maxLength: 10 });
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'capital', kind === 'CONTRIBUTION' ? 'PC' : 'PW', documentDate);
+    const eventId = randomUUID();
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO partner_capital (id, business_id, member_id, kind, document_date, currency, amount, account_code, reference, note, created_by, event_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [this.id(), caller.business.id, memberId, kind, documentDate, currency, amount.amount.toString(), optionalString(body.accountCode, 'accountCode', 8) ?? '1000', reference, optionalString(body.note, 'note', 400), caller.user.id, eventId, this.now()],
+      );
+      const entry = buildPartnerCapitalPosting({
+        businessId: caller.business.id,
+        date: documentDate,
+        reference,
+        currency,
+        amount,
+        partnerId: member.display_name,
+        cashAccount: optionalString(body.accountCode, 'accountCode', 8) ?? '1000',
+        kind,
+        postedBy: caller.user.id,
+        eventId: `${eventId}:journal`,
+      });
+      this.postJournal(caller, entry);
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: `capital.${kind.toLowerCase()}`, entityType: 'partner_capital', entityId: reference, detail: { amount: amount.amount.toString(), memberId } });
+      return { reference, amount: amount.amount.toString(), kind };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Reports
+  // -------------------------------------------------------------------------
+
+  dashboard(caller: Caller, range: { from: string; to: string }): Record<string, unknown> {
+    this.assertPermission(caller, 'report.view');
+    const currency = caller.business.currency;
+    const entries = this.journalEntries(caller.business.id);
+    const inRange = entries.filter((e) => e.date >= range.from && e.date <= range.to);
+    const pnl = profitAndLoss(inRange, { from: range.from, to: range.to, currency });
+    const flow = cashFlow(entries, { from: range.from, to: range.to, currency });
+    const showCost = this.permissions(caller).has('financial_reports.view');
+    const sales = sumMoney(
+      this.db.all<{ net: string; currency: string }>('SELECT net, currency FROM sales WHERE business_id = ? AND document_date >= ? AND document_date <= ?', [caller.business.id, range.from, range.to]).map((r) => money(r.currency, r.net)),
+      currency,
+    );
+    const purchases = sumMoney(
+      this.db.all<{ total: string; currency: string }>('SELECT total, currency FROM purchases WHERE business_id = ? AND document_date >= ? AND document_date <= ?', [caller.business.id, range.from, range.to]).map((r) => money(r.currency, r.total)),
+      currency,
+    );
+    const lowStock = this.listStock(caller).filter((row) => (row as { belowReorder: boolean }).belowReorder).length;
+    const receivables = this.db
+      .all<{ id: string }>('SELECT id FROM customers WHERE business_id = ? AND is_active = 1', [caller.business.id])
+      .reduce<Money>((acc, row) => addMoney(acc, this.receivableFor(caller.business.id, row.id)), zeroMoney(currency));
+    const payables = this.db
+      .all<{ id: string }>('SELECT id FROM suppliers WHERE business_id = ? AND is_active = 1', [caller.business.id])
+      .reduce<Money>((acc, row) => addMoney(acc, this.payableFor(caller.business.id, row.id)), zeroMoney(currency));
+
+    return {
+      range,
+      currency,
+      sales: sales.amount.toString(),
+      purchases: purchases.amount.toString(),
+      cashBalance: flow.closing.amount.toString(),
+      cashReceived: flow.inflows.amount.toString(),
+      cashPaid: flow.outflows.amount.toString(),
+      receivables: receivables.amount.toString(),
+      payables: payables.amount.toString(),
+      lowStockItems: lowStock,
+      ...(showCost
+        ? {
+            revenue: pnl.netRevenue.amount.toString(),
+            costOfGoodsSold: pnl.costOfGoodsSold.amount.toString(),
+            grossProfit: pnl.grossProfit.amount.toString(),
+            operatingExpenses: pnl.operatingExpenses.amount.toString(),
+            netProfit: pnl.netProfit.amount.toString(),
+            cashBasisResult: cashBasisOperatingResult(entries, { from: range.from, to: range.to, currency }).amount.toString(),
+          }
+        : { costVisibility: 'restricted' }),
+    };
+  }
+
+  profitAndLossReport(caller: Caller, range: { from: string; to: string }) {
+    this.assertPermission(caller, 'financial_reports.view');
+    const currency = caller.business.currency;
+    const pnl = profitAndLoss(this.journalEntries(caller.business.id), { from: range.from, to: range.to, currency });
+    return {
+      from: range.from,
+      to: range.to,
+      currency,
+      basis: 'ACCRUAL' as const,
+      revenue: pnl.revenue.amount.toString(),
+      contraRevenue: pnl.contraRevenue.amount.toString(),
+      netRevenue: pnl.netRevenue.amount.toString(),
+      costOfGoodsSold: pnl.costOfGoodsSold.amount.toString(),
+      grossProfit: pnl.grossProfit.amount.toString(),
+      operatingExpenses: pnl.operatingExpenses.amount.toString(),
+      expensesByAccount: pnl.expensesByAccount.map((row) => ({ account: row.account, name: row.name, amount: row.amount.amount.toString() })),
+      otherIncome: pnl.otherIncome.amount.toString(),
+      netProfit: pnl.netProfit.amount.toString(),
+      cashBasisResult: cashBasisOperatingResult(this.journalEntries(caller.business.id), { from: range.from, to: range.to, currency }).amount.toString(),
+      note: 'Accrual basis: stock purchases are assets until sold. The cash-basis figure is reported separately.',
+    };
+  }
+
+  balanceSheetReport(caller: Caller, asOf: string) {
+    this.assertPermission(caller, 'financial_reports.view');
+    const currency = caller.business.currency;
+    const sheet = balanceSheet(this.journalEntries(caller.business.id), { asOf, currency });
+    return {
+      asOf,
+      currency,
+      assets: sheet.assets.map((row) => ({ account: row.account, name: row.name, amount: row.debit.amount.sub(row.credit.amount).toString() })),
+      liabilities: sheet.liabilities.map((row) => ({ account: row.account, name: row.name, amount: row.credit.amount.sub(row.debit.amount).toString() })),
+      equity: sheet.equity.map((row) => ({ account: row.account, name: row.name, amount: row.credit.amount.sub(row.debit.amount).toString() })),
+      totalAssets: sheet.totalAssets.amount.toString(),
+      totalLiabilities: sheet.totalLiabilities.amount.toString(),
+      totalEquity: sheet.totalEquity.amount.toString(),
+      totalEquityIncludingResult: sheet.totalEquityIncludingResult.amount.toString(),
+      balanced: sheet.balanced,
+    };
+  }
+
+  trialBalanceReport(caller: Caller, range: { from: string; to: string }) {
+    this.assertPermission(caller, 'financial_reports.view');
+    const currency = caller.business.currency;
+    const balance = trialBalance(this.journalEntries(caller.business.id, range), currency);
+    return {
+      currency,
+      balanced: balance.balanced,
+      totalDebit: balance.totalDebit.amount.toString(),
+      totalCredit: balance.totalCredit.amount.toString(),
+      rows: balance.rows.map((row) => ({ account: row.account, name: row.name, type: row.type, debit: row.debit.amount.toString(), credit: row.credit.amount.toString() })),
+    };
+  }
+
+  cashFlowReport(caller: Caller, range: { from: string; to: string }) {
+    this.assertPermission(caller, 'finance.view');
+    const currency = caller.business.currency;
+    const flow = cashFlow(this.journalEntries(caller.business.id), { from: range.from, to: range.to, currency });
+    return {
+      from: range.from,
+      to: range.to,
+      currency,
+      opening: flow.opening.amount.toString(),
+      inflows: flow.inflows.amount.toString(),
+      outflows: flow.outflows.amount.toString(),
+      netChange: flow.netChange.amount.toString(),
+      closing: flow.closing.amount.toString(),
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Farming
+  // -------------------------------------------------------------------------
+
+  createFarm(caller: Caller, input: Record<string, unknown>): { id: string } {
+    this.assertPermission(caller, 'farming.setup');
+    const id = this.id();
+    const now = this.now();
+    this.db.run(
+      `INSERT INTO farms (id, business_id, name, location_id, address, area, area_unit, latitude, longitude, notes, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        id,
+        caller.business.id,
+        requireString(input.name, 'name', { maxLength: 120 }),
+        optionalString(input.locationId, 'locationId', 64),
+        optionalString(input.address, 'address', 400),
+        input.area === undefined || input.area === null ? null : dec(String(input.area)).toString(),
+        optionalString(input.areaUnit, 'areaUnit', 24),
+        optionalString(input.latitude, 'latitude', 32),
+        optionalString(input.longitude, 'longitude', 32),
+        optionalString(input.notes, 'notes', 1000),
+        now,
+        now,
+      ],
+    );
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'farm.create', entityType: 'farm', entityId: id });
+    return { id };
+  }
+
+  listFarms(caller: Caller): unknown[] {
+    this.assertPermission(caller, 'farming.view');
+    return this.db
+      .all<{ id: string; name: string; address: string | null; area: string | null; area_unit: string | null }>('SELECT id, name, address, area, area_unit FROM farms WHERE business_id = ? AND is_active = 1 ORDER BY name', [
+        caller.business.id,
+      ])
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        address: row.address,
+        area: row.area,
+        areaUnit: row.area_unit,
+        units: this.db.all('SELECT id, kind, name, area, area_unit, capacity, capacity_unit FROM farm_units WHERE farm_id = ? AND is_active = 1', [row.id]),
+      }));
+  }
+
+  createFarmUnit(caller: Caller, input: Record<string, unknown>): { id: string } {
+    this.assertPermission(caller, 'farming.setup');
+    const farmId = requireString(input.farmId, 'farmId', { maxLength: 64 });
+    this.assertBusinessValue(this.db.get('SELECT id FROM farms WHERE id = ? AND business_id = ?', [farmId, caller.business.id]), 'Farm');
+    const kind = requireEnum<FarmUnitKind>(input.kind, 'kind', ['PLOT', 'FIELD', 'GREENHOUSE', 'BARN', 'PEN', 'POULTRY_HOUSE', 'POND', 'TANK', 'OTHER'] as const);
+    const id = this.id();
+    this.db.run(
+      `INSERT INTO farm_units (id, business_id, farm_id, kind, name, area, area_unit, capacity, capacity_unit, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      [
+        id,
+        caller.business.id,
+        farmId,
+        kind,
+        requireString(input.name, 'name', { maxLength: 120 }),
+        input.area === undefined || input.area === null ? null : dec(String(input.area)).toString(),
+        optionalString(input.areaUnit, 'areaUnit', 24),
+        input.capacity === undefined || input.capacity === null ? null : dec(String(input.capacity)).toString(),
+        optionalString(input.capacityUnit, 'capacityUnit', 24),
+        this.now(),
+      ],
+    );
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'farm_unit.create', entityType: 'farm_unit', entityId: id });
+    return { id };
+  }
+
+  createCycle(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'farming.setup');
+    const farmId = requireString(input.farmId, 'farmId', { maxLength: 64 });
+    const unitId = requireString(input.unitId, 'unitId', { maxLength: 64 });
+    this.assertBusinessValue(this.db.get('SELECT id FROM farms WHERE id = ? AND business_id = ?', [farmId, caller.business.id]), 'Farm');
+    this.assertBusinessValue(this.db.get('SELECT id FROM farm_units WHERE id = ? AND business_id = ?', [unitId, caller.business.id]), 'Farm unit');
+    const farmingType = requireEnum<FarmingType>(input.farmingType, 'farmingType', ['CROP', 'HORTICULTURE', 'LIVESTOCK', 'POULTRY', 'AQUACULTURE'] as const);
+    const startDate = requireString(input.startDate, 'startDate', { maxLength: 10 });
+    const reference = optionalString(input.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'cycle', 'CYC', startDate);
+    const id = this.id();
+    const now = this.now();
+    this.db.run(
+      `INSERT INTO production_cycles (id, business_id, farm_id, unit_id, reference, farming_type, title, crop_or_species, variety_or_breed, season, responsible_member_id, start_date, expected_end_date, planned_output, planned_output_unit, status, starting_population, notes, revision, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, 1, ?, ?)`,
+      [
+        id,
+        caller.business.id,
+        farmId,
+        unitId,
+        reference,
+        farmingType,
+        requireString(input.title, 'title', { maxLength: 160 }),
+        optionalString(input.cropOrSpecies, 'cropOrSpecies', 120),
+        optionalString(input.varietyOrBreed, 'varietyOrBreed', 120),
+        optionalString(input.season, 'season', 60),
+        optionalString(input.responsibleMemberId, 'responsibleMemberId', 64),
+        startDate,
+        optionalString(input.expectedEndDate, 'expectedEndDate', 10),
+        input.plannedOutput === undefined || input.plannedOutput === null ? null : dec(String(input.plannedOutput)).toString(),
+        optionalString(input.plannedOutputUnit, 'plannedOutputUnit', 24),
+        input.startingPopulation === undefined || input.startingPopulation === null ? null : dec(String(input.startingPopulation)).toString(),
+        optionalString(input.notes, 'notes', 1000),
+        now,
+        now,
+      ],
+    );
+    // Enable the farming type on the business the first time it is used.
+    const business = this.getBusiness(caller.business.id);
+    const types = new Set(parseJson<string[]>(business.farming_types, []));
+    if (!types.has(farmingType)) {
+      types.add(farmingType);
+      this.db.run('UPDATE businesses SET farming_types = ? WHERE id = ?', [JSON.stringify([...types]), caller.business.id]);
+    }
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'cycle.create', entityType: 'production_cycle', entityId: id, detail: { reference, farmingType } });
+    return { id, reference, status: 'ACTIVE' };
+  }
+
+  listCycles(caller: Caller, status?: string): unknown[] {
+    this.assertPermission(caller, 'farming.view');
+    const showCost = this.permissions(caller).has('farming.cost.view');
+    const rows = this.db.all<{
+      id: string; reference: string; farming_type: string; title: string; crop_or_species: string | null; variety_or_breed: string | null;
+      status: string; start_date: string; expected_end_date: string | null; planned_output: string | null; planned_output_unit: string | null; starting_population: string | null;
+      farm_id: string; unit_id: string;
+    }>(
+      status
+        ? 'SELECT * FROM production_cycles WHERE business_id = ? AND status = ? ORDER BY start_date DESC'
+        : 'SELECT * FROM production_cycles WHERE business_id = ? ORDER BY start_date DESC',
+      status ? [caller.business.id, status] : [caller.business.id],
+    );
+    return rows.map((row) => {
+      const cost = this.cycleCostToDate(caller.business.id, row.id);
+      const harvested = this.harvestedQuantity(caller.business.id, row.id);
+      const revenue = this.cycleRevenue(caller.business.id, row.id, caller.business.currency);
+      const soldCogs = this.cycleSoldCogs(caller.business.id, row.id);
+      return {
+        id: row.id,
+        reference: row.reference,
+        farmingType: row.farming_type,
+        title: row.title,
+        cropOrSpecies: row.crop_or_species,
+        varietyOrBreed: row.variety_or_breed,
+        status: row.status,
+        farmId: row.farm_id,
+        unitId: row.unit_id,
+        startDate: row.start_date,
+        expectedEndDate: row.expected_end_date,
+        plannedOutput: row.planned_output,
+        plannedOutputUnit: row.planned_output_unit,
+        startingPopulation: row.starting_population,
+        harvestedQuantity: harvested.quantity.toString(),
+        ...(showCost
+          ? {
+              costToDate: cost.amount.toString(),
+              revenue: revenue.amount.toString(),
+              cogs: soldCogs.amount.toString(),
+              grossProfit: revenue.amount.sub(soldCogs.amount).toString(),
+            }
+          : { costVisibility: 'restricted' }),
+      };
+    });
+  }
+
+  cycleCostToDate(businessId: string, cycleId: string, currency = 'BDT'): Money {
+    const rows = this.db.all<{ amount: string; currency: string }>('SELECT amount, currency FROM cost_sources WHERE business_id = ? AND cycle_id = ?', [businessId, cycleId]);
+    const base = rows.reduce<Money>((acc, row) => addMoney(acc, money(row.currency, row.amount)), zeroMoney(rows[0]?.currency ?? currency));
+    const allocated = this.db.all<{ amount: string; currency: string }>('SELECT amount, currency FROM cost_allocations WHERE business_id = ? AND cycle_id = ?', [businessId, cycleId]);
+    return allocated.reduce<Money>((acc, row) => addMoney(acc, money(row.currency, row.amount)), base);
+  }
+
+  harvestedQuantity(businessId: string, cycleId: string): { quantity: Decimal; unit: string; assignedCost: Money } {
+    const rows = this.db.all<{ quantity: string; unit: string; cost_basis: string; currency: string }>('SELECT quantity, unit, cost_basis, currency FROM harvests WHERE business_id = ? AND cycle_id = ? ORDER BY occurred_on, created_at', [
+      businessId,
+      cycleId,
+    ]);
+    let quantity = Decimal.ZERO;
+    let unit = '';
+    let assigned = zeroMoney(rows[0]?.currency ?? 'BDT');
+    for (const row of rows) {
+      quantity = quantity.add(dec(row.quantity));
+      unit = unit || row.unit;
+      assigned = addMoney(assigned, money(row.currency, row.cost_basis));
+    }
+    return { quantity, unit, assignedCost: assigned };
+  }
+
+  private cycleRevenue(businessId: string, cycleId: string, currency: string): Money {
+    return this.cycleSales(businessId, cycleId, currency).revenue;
+  }
+
+  private cycleSoldCogs(businessId: string, cycleId: string): Money {
+    return this.cycleSales(businessId, cycleId, 'BDT').cogs;
+  }
+
+  /**
+   * Attribute sales to a cycle through real traceability: the products that were
+   * actually harvested from that cycle. This is why finished output is stored as
+   * a stock item linked to the harvest.
+   */
+  private cycleSales(businessId: string, cycleId: string, currency: string): { revenue: Money; cogs: Money } {
+    const productIds = this.db
+      .all<{ product_id: string }>('SELECT DISTINCT product_id FROM harvests WHERE business_id = ? AND cycle_id = ? AND product_id IS NOT NULL', [businessId, cycleId])
+      .map((row) => row.product_id);
+    if (productIds.length === 0) return { revenue: zeroMoney(currency), cogs: zeroMoney(currency) };
+    const placeholders = productIds.map(() => '?').join(',');
+    const rows = this.db.all<{ quantity: string; line_total: string; unit_cost: string; currency: string }>(
+      `SELECT l.quantity, l.line_total, l.unit_cost, s.currency
+       FROM sale_lines l JOIN sales s ON s.id = l.sale_id
+       WHERE l.business_id = ? AND l.product_id IN (${placeholders})`,
+      [businessId, ...productIds],
+    );
+    const revenue = rows.reduce<Money>((acc, row) => addMoney(acc, money(row.currency, row.line_total)), zeroMoney(currency));
+    const cogs = rows.reduce<Money>((acc, row) => addMoney(acc, mulMoney(money(row.currency, row.unit_cost), dec(row.quantity))), zeroMoney(currency));
+    return { revenue, cogs };
+  }
+
+  recordFarmingEvent(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    const body = asRecord(input, 'farming event');
+    const cycleId = requireString(body.cycleId, 'cycleId', { maxLength: 64 });
+    const cycle = this.assertBusinessValue(this.db.get<{ id: string; reference: string; status: string }>('SELECT id, reference, status FROM production_cycles WHERE id = ? AND business_id = ?', [cycleId, caller.business.id]), 'Production cycle');
+    if (cycle.status === 'CLOSED') throw HttpError.conflict('CYCLE_CLOSED', 'This cycle is closed; reopen it before recording new activity');
+    const eventType = requireEnum(
+      body.eventType,
+      'eventType',
+      ['INPUT_ISSUE', 'DIRECT_LABOUR', 'MACHINERY_FUEL', 'VETERINARY', 'UTILITIES', 'PACKAGING', 'TRANSPORT', 'OVERHEAD', 'OBSERVATION', 'MORTALITY', 'INTERNAL_USE', 'WASTE'] as const,
+    );
+    const occurredOn = requireString(body.occurredOn, 'occurredOn', { maxLength: 10 });
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const eventId = randomUUID();
+
+    if (eventType === 'OBSERVATION') {
+      this.assertPermission(caller, 'farming.observation');
+      this.db.run(
+        `INSERT INTO observations (id, business_id, cycle_id, observed_on, kind, value, unit, notes, recorded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [this.id(), caller.business.id, cycleId, occurredOn, requireString(body.kind, 'kind', { maxLength: 60 }), optionalString(body.value, 'value', 60), optionalString(body.unit, 'unit', 24), optionalString(body.notes, 'notes', 1000), caller.user.id, this.now()],
+      );
+      this.db.run(
+        `INSERT INTO farming_events (id, business_id, cycle_id, event_type, occurred_on, quantity, unit, amount, currency, account_code, product_id, notes, payload, actor_id, device_id, event_id, created_at)
+         VALUES (?, ?, ?, 'OBSERVATION', ?, ?, ?, NULL, NULL, NULL, NULL, ?, '{}', ?, NULL, ?, ?)`,
+        [this.id(), caller.business.id, cycleId, occurredOn, optionalString(body.value, 'value', 60), optionalString(body.unit, 'unit', 24), optionalString(body.notes, 'notes', 1000), caller.user.id, eventId, this.now()],
+      );
+      return { eventType, cycleReference: cycle.reference, recorded: true };
+    }
+
+    if (eventType === 'MORTALITY' || eventType === 'WASTE') {
+      this.assertPermission(caller, 'farming.operations');
+      const quantity = dec(String(body.quantity ?? '0'));
+      if (!quantity.isPositive()) throw HttpError.badRequest('VALIDATION', 'Mortality quantity must be greater than zero');
+      const unit = requireString(body.unit, 'unit', { maxLength: 24 });
+      const reason = requireString(body.reason, 'reason', { minLength: 3, maxLength: 400 });
+      const bookValue = body.bookValue === undefined || body.bookValue === null ? null : money(currency, String(body.bookValue));
+      const abnormal = quantity.gte(dec('25')) ? 1 : 0;
+      const lossCount = this.db.get<{ count: number }>('SELECT COUNT(*) AS count FROM mortality_losses WHERE business_id = ? AND cycle_id = ?', [caller.business.id, cycleId])?.count ?? 0;
+      this.db.run(
+        `INSERT INTO mortality_losses (id, business_id, cycle_id, occurred_on, quantity, unit, reason, book_value, currency, abnormal, recorded_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [this.id(), caller.business.id, cycleId, occurredOn, quantity.toString(), unit, reason, bookValue?.amount.toString() ?? null, bookValue ? currency : null, abnormal, caller.user.id, this.now()],
+      );
+      if (bookValue && bookValue.amount.isPositive()) {
+        this.postJournal(
+          caller,
+          buildInventoryLossPosting({
+            businessId: caller.business.id,
+            date: occurredOn,
+            reference: `${cycle.reference}-LOSS-${lossCount + 1}`,
+            currency,
+            amount: bookValue,
+            reason: `${eventType === 'MORTALITY' ? 'Mortality' : 'Waste'} in ${cycle.reference}: ${reason}`,
+            kind: 'MORTALITY',
+            postedBy: caller.user.id,
+            eventId: `${eventId}:journal`,
+          }),
+        );
+      }
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'farming.mortality', entityType: 'production_cycle', entityId: cycleId, detail: { quantity: quantity.toString(), reason, abnormal: abnormal === 1 } });
+      return { eventType, quantity: quantity.toString(), abnormal: abnormal === 1, escalation: abnormal === 1 ? 'Contact a licensed veterinarian or the local agricultural extension officer.' : null };
+    }
+
+    // Cost-bearing events.
+    this.assertPermission(caller, 'farming.operations');
+    let cost = zeroMoney(currency);
+    const kindMap: Record<string, string> = {
+      INPUT_ISSUE: 'INPUT_ISSUE', DIRECT_LABOUR: 'DIRECT_LABOUR', MACHINERY_FUEL: 'MACHINERY_FUEL', VETERINARY: 'VETERINARY',
+      UTILITIES: 'UTILITIES', PACKAGING: 'PACKAGING', TRANSPORT: 'TRANSPORT', OVERHEAD: 'OVERHEAD', INTERNAL_USE: 'OTHER_DIRECT',
+    };
+
+    return this.db.transaction(() => {
+      if (eventType === 'INPUT_ISSUE') {
+        this.assertPermission(caller, 'farming.input_issue');
+        const productId = requireString(body.productId, 'productId', { maxLength: 64 });
+        const product = this.assertBusinessValue(this.db.get<ProductRow>('SELECT * FROM products WHERE id = ? AND business_id = ?', [productId, caller.business.id]), 'Input product');
+        const quantity = dec(String(body.quantity ?? '0'));
+        if (!quantity.isPositive()) throw HttpError.badRequest('VALIDATION', 'Issued quantity must be greater than zero');
+        const unit = optionalString(body.unit, 'unit', 24) ?? product.unit;
+        const unitCost = this.itemUnitCost(caller.business.id, product.id, currency);
+        cost = mulMoney(unitCost, quantity);
+        this.recordMovement(caller, {
+          itemId: product.id,
+          direction: 'OUT',
+          quantity,
+          unit,
+          unitCost,
+          sourceType: 'INPUT_ISSUE',
+          sourceId: cycle.reference,
+          occurredAt: occurredOn,
+        });
+        this.postJournal(
+          caller,
+          buildInputIssuePosting({
+            businessId: caller.business.id,
+            date: occurredOn,
+            reference: `${cycle.reference}-INPUT-${Date.now()}`,
+            currency,
+            cost,
+            batchReference: cycle.reference,
+            postedBy: caller.user.id,
+            eventId: `${eventId}:journal`,
+          }),
+        );
+      } else {
+        cost = money(currency, String(body.amount ?? '0'));
+        if (!cost.amount.isPositive()) throw HttpError.badRequest('VALIDATION', 'A positive amount is required');
+        const accountCode = optionalString(body.accountCode, 'accountCode', 8) ?? defaultAccountForEvent(eventType);
+        this.postJournal(
+          caller,
+          buildDirectBatchCostPosting({
+            businessId: caller.business.id,
+            date: occurredOn,
+            reference: `${cycle.reference}-${eventType}-${Date.now()}`,
+            currency,
+            cost,
+            expenseAccount: accountCode,
+            cashAccount: optionalString(body.paymentAccount, 'paymentAccount', 8) ?? '1000',
+            paid: body.paid === undefined ? true : Boolean(body.paid),
+            batchReference: cycle.reference,
+            postedBy: caller.user.id,
+            eventId: `${eventId}:journal`,
+          }),
+        );
+      }
+
+      const costId = this.id();
+      this.db.run(
+        `INSERT INTO cost_sources (id, business_id, cycle_id, kind, currency, amount, shared, incurred_on, source_type, source_id, note, revision, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1, ?)`,
+        [costId, caller.business.id, cycleId, kindMap[eventType] ?? 'OTHER_DIRECT', currency, cost.amount.toString(), occurredOn, eventType, cycle.reference, optionalString(body.notes, 'notes', 600), this.now()],
+      );
+      this.db.run(
+        `INSERT INTO farming_events (id, business_id, cycle_id, event_type, occurred_on, quantity, unit, amount, currency, account_code, product_id, notes, payload, actor_id, device_id, event_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        [
+          this.id(),
+          caller.business.id,
+          cycleId,
+          eventType,
+          occurredOn,
+          optionalString(body.quantity, 'quantity', 40),
+          optionalString(body.unit, 'unit', 24),
+          cost.amount.toString(),
+          currency,
+          optionalString(body.accountCode, 'accountCode', 8),
+          optionalString(body.productId, 'productId', 64),
+          optionalString(body.notes, 'notes', 1000),
+          JSON.stringify({}),
+          caller.user.id,
+          eventId,
+          this.now(),
+        ],
+      );
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: `farming.${eventType.toLowerCase()}`, entityType: 'production_cycle', entityId: cycleId, detail: { cost: cost.amount.toString() } });
+      return { eventType, cost: cost.amount.toString(), currency, costToDate: this.cycleCostToDate(caller.business.id, cycleId, currency).amount.toString() };
+    });
+  }
+
+  recordHarvest(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'farming.harvest');
+    const body = asRecord(input, 'harvest');
+    const cycleId = requireString(body.cycleId, 'cycleId', { maxLength: 64 });
+    const cycle = this.assertBusinessValue(
+      this.db.get<{ id: string; reference: string; planned_output: string | null; planned_output_unit: string | null; status: string }>(
+        'SELECT id, reference, planned_output, planned_output_unit, status FROM production_cycles WHERE id = ? AND business_id = ?',
+        [cycleId, caller.business.id],
+      ),
+      'Production cycle',
+    );
+    const quantity = dec(String(body.quantity ?? '0'));
+    if (!quantity.isPositive()) throw HttpError.badRequest('VALIDATION', 'Harvest quantity must be greater than zero');
+    const unit = requireString(body.unit, 'unit', { maxLength: 24 });
+    const occurredOn = requireString(body.occurredOn, 'occurredOn', { maxLength: 10 });
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const method = requireEnum(body.method ?? 'PLANNED_YIELD_PRORATA', 'method', ['PLANNED_YIELD_PRORATA', 'CLOSING_REMAINDER'] as const);
+    const eventId = randomUUID();
+
+    return this.db.transaction(() => {
+      const costToDate = this.cycleCostToDate(caller.business.id, cycleId, currency);
+      const harvested = this.harvestedQuantity(caller.business.id, cycleId);
+      const assignment = assignHarvestCost(
+        {
+          cycleId,
+          costToDate,
+          harvestedQuantityToDate: harvested.quantity,
+          assignedCostToDate: harvested.assignedCost,
+          outputUnit: harvested.unit || unit,
+        },
+        quantity,
+        method,
+        cycle.planned_output ? { plannedOutput: dec(cycle.planned_output) } : {},
+      );
+
+      const harvestId = this.id();
+      this.db.run(
+        `INSERT INTO harvests (id, business_id, cycle_id, occurred_on, quantity, unit, product_id, location_id, lot_no, costing_method, cost_basis, unit_cost, currency, grade, notes, created_by, device_id, event_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          harvestId,
+          caller.business.id,
+          cycleId,
+          occurredOn,
+          quantity.toString(),
+          unit,
+          optionalString(body.productId, 'productId', 64),
+          optionalString(body.locationId, 'locationId', 64),
+          optionalString(body.lotNo, 'lotNo', 60),
+          method,
+          assignment.assignedCost.amount.toString(),
+          assignment.costPerUnit.amount.toString(),
+          currency,
+          optionalString(body.grade, 'grade', 40),
+          optionalString(body.notes, 'notes', 1000),
+          caller.user.id,
+          null,
+          eventId,
+          this.now(),
+        ],
+      );
+
+      if (assignment.assignedCost.amount.isPositive()) {
+        this.postJournal(
+          caller,
+          buildHarvestPosting({
+            businessId: caller.business.id,
+            date: occurredOn,
+            reference: `${cycle.reference}-HARVEST-${harvestId.slice(0, 6)}`,
+            currency,
+            costBasis: assignment.assignedCost,
+            postedBy: caller.user.id,
+            eventId: `${eventId}:journal`,
+          }),
+        );
+      }
+
+      // Finished output becomes sellable stock at the assigned cost per unit.
+      const productId = optionalString(body.productId, 'productId', 64);
+      if (productId) {
+        const product = this.assertBusinessValue(this.db.get<ProductRow>('SELECT * FROM products WHERE id = ? AND business_id = ?', [productId, caller.business.id]), 'Output product');
+        this.recordMovement(caller, {
+          itemId: product.id,
+          locationId: optionalString(body.locationId, 'locationId', 64) ?? undefined,
+          direction: 'IN',
+          quantity,
+          unit,
+          unitCost: assignment.costPerUnit,
+          sourceType: 'HARVEST',
+          sourceId: cycle.reference,
+          occurredAt: occurredOn,
+        });
+      }
+
+      const remaining = subMoney(costToDate, assignment.nextState.assignedCostToDate);
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'farming.harvest', entityType: 'production_cycle', entityId: cycleId, detail: { quantity: quantity.toString(), cost: assignment.assignedCost.amount.toString() } });
+      return {
+        harvestId,
+        quantity: quantity.toString(),
+        unitCost: assignment.costPerUnit.amount.toString(),
+        costBasis: assignment.assignedCost.amount.toString(),
+        capped: assignment.capped,
+        costToDate: costToDate.amount.toString(),
+        remainingCostInBatch: remaining.amount.toString(),
+        currency,
+        note: 'Unsold harvest stays in finished-goods inventory; profit is recognised only when sold.',
+      };
+    });
+  }
+
+  allocateSharedCost(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'farming.setup');
+    const body = asRecord(input, 'cost allocation');
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const amount = money(currency, String(body.amount ?? '0'));
+    const basis = requireEnum(body.basis, 'basis', ['ACTUAL_USAGE', 'AREA', 'TIME', 'OUTPUT_QTY', 'ANIMAL_COUNT', 'BIOMASS', 'MANUAL_PERCENT'] as const);
+    const targets = asRecordArray(body.targets).map((target) => ({
+      cycleId: requireString(target.cycleId, 'target.cycleId', { maxLength: 64 }),
+      basisValue: dec(String(target.basisValue ?? '0')),
+      ...(target.manualPercent !== undefined ? { manualPercent: dec(String(target.manualPercent)) } : {}),
+    }));
+    const result = allocateCost(amount, targets, basis, { costSourceId: randomUUID() });
+
+    return this.db.transaction(() => {
+      for (const target of targets) this.assertBusinessValue(this.db.get('SELECT id FROM production_cycles WHERE id = ? AND business_id = ?', [target.cycleId, caller.business.id]), 'Production cycle');
+      const costSourceId = this.id();
+      this.db.run(
+        `INSERT INTO cost_sources (id, business_id, cycle_id, kind, currency, amount, shared, incurred_on, source_type, source_id, note, revision, created_at)
+         VALUES (?, ?, NULL, 'OVERHEAD', ?, ?, 1, ?, 'ALLOCATION', ?, ?, 1, ?)`,
+        [costSourceId, caller.business.id, currency, amount.amount.toString(), requireString(body.incurredOn, 'incurredOn', { maxLength: 10 }), costSourceId, optionalString(body.note, 'note', 600), this.now()],
+      );
+      for (const share of result.shares as readonly CostAllocationShare[]) {
+        this.db.run(
+          `INSERT INTO cost_allocations (id, business_id, cost_source_id, cycle_id, basis, basis_value, share_ratio, currency, amount, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [this.id(), caller.business.id, costSourceId, share.cycleId, basis, share.basisValue.toString(), share.shareRatio.toString(), currency, share.amount.amount.toString(), caller.user.id, this.now()],
+        );
+      }
+      this.db.run('UPDATE cost_sources SET allocated_at = ? WHERE id = ?', [this.now(), costSourceId]);
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'farming.allocate', entityType: 'cost_source', entityId: costSourceId, detail: { amount: amount.amount.toString(), basis, shares: result.shares.length } });
+      return {
+        costSourceId,
+        basis,
+        currency,
+        totalCost: amount.amount.toString(),
+        shares: result.shares.map((share) => ({ cycleId: share.cycleId, amount: share.amount.amount.toString(), ratio: share.shareRatio.toString() })),
+        allocatedTotal: result.allocatedTotal.amount.toString(),
+        unallocated: result.unallocated.amount.toString(),
+      };
+    });
+  }
+
+  cycleProfitReport(caller: Caller, cycleId: string): Record<string, unknown> {
+    this.assertPermission(caller, 'farming.cost.view');
+    const cycle = this.assertBusinessValue(
+      this.db.get<{ id: string; reference: string; title: string; farming_type: string; planned_output_unit: string | null; planned_output: string | null }>(
+        'SELECT id, reference, title, farming_type, planned_output_unit, planned_output FROM production_cycles WHERE id = ? AND business_id = ?',
+        [cycleId, caller.business.id],
+      ),
+      'Production cycle',
+    );
+    const currency = caller.business.currency;
+    const costs = this.db.all<{ kind: string; amount: string; currency: string; shared: number }>('SELECT kind, amount, currency, shared FROM cost_sources WHERE business_id = ? AND cycle_id = ?', [caller.business.id, cycleId]);
+    const allocations = this.db.all<{ amount: string; currency: string }>('SELECT amount, currency FROM cost_allocations WHERE business_id = ? AND cycle_id = ?', [caller.business.id, cycleId]);
+    const costToDate = this.cycleCostToDate(caller.business.id, cycleId, currency);
+    const harvested = this.harvestedQuantity(caller.business.id, cycleId);
+    const sales = this.cycleSales(caller.business.id, cycleId, currency);
+    const revenue = sales.revenue;
+    const soldCogs = sales.cogs;
+    const unit = harvested.unit || cycle.planned_output_unit || 'unit';
+
+    const byKind = new Map<string, Money>();
+    for (const row of [...costs.filter((c) => c.shared === 0), ...allocations.map((a) => ({ kind: 'OVERHEAD (allocated)', amount: a.amount, currency: a.currency }))]) {
+      byKind.set(row.kind, addMoney(byKind.get(row.kind) ?? zeroMoney(row.currency), money(row.currency, row.amount)));
+    }
+
+    return {
+      cycleId,
+      reference: cycle.reference,
+      title: cycle.title,
+      farmingType: cycle.farming_type,
+      currency,
+      costToDate: costToDate.amount.toString(),
+      costBreakdown: [...byKind.entries()].map(([kind, amount]) => ({ kind, amount: amount.amount.toString() })).sort((a, b) => Number(b.amount) - Number(a.amount)),
+      harvestedQuantity: harvested.quantity.toString(),
+      outputUnit: unit,
+      assignedToFinishedStock: harvested.assignedCost.amount.toString(),
+      costRemainingInBatch: subMoney(costToDate, harvested.assignedCost).amount.toString(),
+      revenue: revenue.amount.toString(),
+      cogs: soldCogs.amount.toString(),
+      grossProfit: revenue.amount.sub(soldCogs.amount).toString(),
+      costInUnsoldOutput: subMoney(harvested.assignedCost, soldCogs).amount.toString(),
+      note: 'Accrual basis. Profit counts only sold output; unsold harvest remains inventory.',
+    };
+  }
+
+  closeCycle(caller: Caller, cycleId: string, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'farming.close_cycle');
+    const cycle = this.assertBusinessValue(this.db.get<{ id: string; reference: string }>('SELECT id, reference FROM production_cycles WHERE id = ? AND business_id = ?', [cycleId, caller.business.id]), 'Production cycle');
+    const body = asRecord(input ?? {}, 'close');
+    const occurredOn = optionalString(body.closedOn, 'closedOn', 10) ?? new Date().toISOString().slice(0, 10);
+    const harvestRemainder = body.harvestRemainingCost !== false;
+    let released: Money | null = null;
+    const currency = caller.business.currency;
+
+    if (harvestRemainder) {
+      const quantityRaw = optionalString(body.remainingQuantity, 'remainingQuantity', 40);
+      if (quantityRaw) {
+        const harvested = this.harvestedQuantity(caller.business.id, cycleId);
+        const costToDate = this.cycleCostToDate(caller.business.id, cycleId, currency);
+        const assignment = assignHarvestCost(
+          { cycleId, costToDate, harvestedQuantityToDate: harvested.quantity, assignedCostToDate: harvested.assignedCost, outputUnit: harvested.unit || 'unit' },
+          dec(quantityRaw),
+          'CLOSING_REMAINDER',
+        );
+        if (assignment.assignedCost.amount.isPositive()) {
+          const eventId = randomUUID();
+          this.postJournal(
+            caller,
+            buildHarvestPosting({
+              businessId: caller.business.id,
+              date: occurredOn,
+              reference: `${cycle.reference}-CLOSE`,
+              currency,
+              costBasis: assignment.assignedCost,
+              postedBy: caller.user.id,
+              eventId: `${eventId}:journal`,
+            }),
+          );
+          this.db.run(
+            `INSERT INTO harvests (id, business_id, cycle_id, occurred_on, quantity, unit, costing_method, cost_basis, unit_cost, currency, notes, created_by, event_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'CLOSING_REMAINDER', ?, ?, ?, 'Final harvest on cycle close', ?, ?, ?)`,
+            [
+              this.id(),
+              caller.business.id,
+              cycleId,
+              occurredOn,
+              dec(quantityRaw).toString(),
+              harvested.unit || 'unit',
+              assignment.assignedCost.amount.toString(),
+              assignment.costPerUnit.amount.toString(),
+              currency,
+              caller.user.id,
+              eventId,
+              this.now(),
+            ],
+          );
+          released = assignment.assignedCost;
+        }
+      }
+    }
+
+    this.db.run(`UPDATE production_cycles SET status = 'CLOSED', actual_end_date = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND business_id = ?`, [
+      occurredOn,
+      this.now(),
+      cycleId,
+      caller.business.id,
+    ]);
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'cycle.close', entityType: 'production_cycle', entityId: cycleId, detail: { released: released?.amount.toString() ?? '0' } });
+    return { cycleId, status: 'CLOSED', releasedToFinishedStock: released?.amount.toString() ?? '0' };
+  }
+
+  farmingDashboard(caller: Caller) {
+    this.assertPermission(caller, 'farming.view');
+    const currency = caller.business.currency;
+    const cycles = this.listCycles(caller) as { id: string; status: string; costToDate?: string; revenue?: string }[];
+    const active = cycles.filter((c) => c.status === 'ACTIVE' || c.status === 'HARVESTING');
+    const totalCost = active.reduce<Money>((acc, c) => addMoney(acc, money(currency, c.costToDate ?? '0')), zeroMoney(currency));
+    const revenue = active.reduce<Money>((acc, c) => addMoney(acc, money(currency, c.revenue ?? '0')), zeroMoney(currency));
+    const mortality = this.db.all<{ cycle_id: string; quantity: string; abnormal: number }>('SELECT cycle_id, quantity, abnormal FROM mortality_losses WHERE business_id = ?', [caller.business.id]);
+    const losses = this.db.all<{ cycle_id: string; cost: string }>('SELECT cycle_id, unit_cost AS cost FROM harvests WHERE business_id = ?', [caller.business.id]);
+    void losses;
+    return {
+      currency,
+      activeCycles: active.length,
+      closedCycles: cycles.length - active.length,
+      totalCostToDate: totalCost.amount.toString(),
+      revenue: revenue.amount.toString(),
+      grossProfit: revenue.amount.sub(totalCost.amount).toString(),
+      mortalityAlerts: mortality.filter((m) => m.abnormal === 1).length,
+      mortalityRecords: mortality.length,
+      cycles,
+    };
+  }
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) throw HttpError.badRequest('VALIDATION', 'targets must be an array');
+  return value.map((item) => asRecord(item, 'target'));
+}
+
+function defaultAccountForEvent(eventType: string): string {
+  switch (eventType) {
+    case 'DIRECT_LABOUR':
+      return '5110';
+    case 'MACHINERY_FUEL':
+      return '5140';
+    case 'VETERINARY':
+      return '5150';
+    case 'UTILITIES':
+      return '5120';
+    case 'PACKAGING':
+      return '5180';
+    case 'TRANSPORT':
+      return '5130';
+    default:
+      return '5100';
+  }
+}
+
+export { pctOf };
