@@ -44,6 +44,11 @@ jobs:
       EXPO_PUBLIC_API_URL: ${{ inputs.apiUrl }}
       EXPO_NO_TELEMETRY: '1'
       CI: '1'
+      # ubuntu-latest ships the Android SDK; `android-actions/setup-android` is
+      # NOT used because its own sdkmanager call fails against cmdline-tools 16.x
+      # (the licence prompt exits 1). We drive sdkmanager ourselves instead.
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Check out the repository
@@ -55,13 +60,17 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up the Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Accept SDK licences and install platform/build tools
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          set -euo pipefail
+          SDKMGR=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort | tail -n 1)
+          test -x "$SDKMGR" || { echo "::error::sdkmanager not found under $ANDROID_HOME"; exit 1; }
+          echo "Using $SDKMGR"
+          # Accept every licence so Gradle can also auto-install the NDK later.
+          yes | "$SDKMGR" --sdk_root="$ANDROID_HOME" --licenses > /dev/null 2>&1 || true
+          "$SDKMGR" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_HOME=$(ls "$ANDROID_HOME")"
+          ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools"
 
       - name: Set up Node
         uses: actions/setup-node@v4
