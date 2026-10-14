@@ -5,8 +5,8 @@ import { Text } from 'react-native';
 import { isAcceptablePassword, passwordProblems } from '@sbm/domain';
 
 import { authErrorMessage, useAuth } from '../../auth/AuthProvider';
-import { Button, Card, Field, Notice, Screen } from '../../components';
-import { useI18n } from '../../i18n';
+import { Button, Card, Field, Notice, Screen, Segmented } from '../../components';
+import { useI18n, type AppLocale } from '../../i18n';
 import { useNetwork } from '../../lib/network';
 import { useTheme } from '../../theme';
 import type { AuthStackParamList } from '../../navigation/types';
@@ -22,7 +22,7 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'Register'>;
  */
 export function RegisterScreen({ navigation }: Props) {
   const { colors, typography, spacing } = useTheme();
-  const { t } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const { register } = useAuth();
   const { online } = useNetwork();
   const [email, setEmail] = useState('');
@@ -56,6 +56,15 @@ export function RegisterScreen({ navigation }: Props) {
 
   return (
     <Screen title={t('auth.signUp')} subtitle={t('app.name')}>
+      {/* Same reason as the sign-in screen: the language must be changeable before signing in. */}
+      <Segmented
+        options={[
+          { value: 'bn-BD' as AppLocale, label: 'বাংলা' },
+          { value: 'en' as AppLocale, label: 'English' },
+        ]}
+        value={locale}
+        onChange={(value) => void setLocale(value)}
+      />
       {!online ? <Notice tone="warning" body={t('auth.needInternet')} /> : null}
       {error ? <Notice tone="danger" body={error} /> : null}
 

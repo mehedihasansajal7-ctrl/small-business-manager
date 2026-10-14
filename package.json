@@ -21,6 +21,7 @@
     "verify": "npm run typecheck && npm run test",
     "api": "npm run build:domain && npm run start -w @sbm/api",
     "api:dev": "npm run build:domain && npm run dev -w @sbm/api",
+    "api:lan": "npm run build:domain && node scripts/serve-lan.mjs",
     "web:dev": "npm run build:domain && npm run dev -w @sbm/web",
     "web:build": "npm run build:domain && npm run build -w @sbm/web",
     "seed": "npm run build:domain && node apps/api/dist/seed.js",

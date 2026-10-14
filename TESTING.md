@@ -1,4 +1,4 @@
-﻿# TESTING.md
+ TESTING.md
 
 Everything on this page is **captured command output**, not a summary of intent. Where a
 command could not be run, it says so.

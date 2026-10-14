@@ -1,4 +1,4 @@
-﻿# ROADMAP.md
+ ROADMAP.md
 
 Ordered so that each step makes the product *usable by a real partner* sooner. Dependency
 notes are explicit. Nothing here is a promise of a date.

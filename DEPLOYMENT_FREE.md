@@ -1,4 +1,4 @@
-﻿# DEPLOYMENT_FREE.md â€” a zero-cost, beginner-friendly setup
+ DEPLOYMENT_FREE.md â€” a zero-cost, beginner-friendly setup
 
 > # âš ï¸ READ THIS FIRST â€” NOTHING HERE WAS DEPLOYED OR VERIFIED LIVE
 >

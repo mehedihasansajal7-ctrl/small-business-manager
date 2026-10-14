@@ -1,4 +1,4 @@
-﻿# IMPLEMENTATION_PLAN.md
+ IMPLEMENTATION_PLAN.md
 
 What was planned, what was actually delivered, and what is left â€” ordered by risk.
 The 18 phases are the master prompt's own sequence (`MASTER_PROMPT.md` Â§14); `TASKS.md`

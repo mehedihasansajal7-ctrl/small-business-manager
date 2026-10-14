@@ -126,11 +126,17 @@ export async function request<T>(method: string, path: string, options: RequestO
   } catch (error) {
     done();
     const aborted = (error as { name?: string })?.name === 'AbortError';
+    // Say WHICH address failed: a nonexistent LAN address hangs until the timeout,
+    // and "took too long" alone sends people looking at their password instead of
+    // the server address.
+    const where = getApiBaseUrl();
     throw new ApiError({
       status: 0,
       code: aborted ? 'TIMEOUT' : 'NETWORK',
       offline: true,
-      message: aborted ? 'The server took too long to answer.' : 'No connection to the server. Changes are saved on this device.',
+      message: aborted
+        ? `The server took too long to answer (${where}). Check the address under "Advanced: which server?" — it must be a running Small Business Manager API.`
+        : `No connection to the server (${where}). Changes are saved on this device.`,
       body: error,
     });
   }

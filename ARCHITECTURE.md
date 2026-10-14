@@ -1,4 +1,4 @@
-﻿# ARCHITECTURE.md
+ ARCHITECTURE.md
 
 ## 1. Repository layout â€” as it exists today
 

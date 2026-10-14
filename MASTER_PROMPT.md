@@ -1,4 +1,4 @@
-﻿# MASTER_PROMPT.md â€” the governing specification
+ MASTER_PROMPT.md â€” the governing specification
 
 > **This file is the governing specification for this project.** Everything below the
 > horizontal rule is copied **verbatim** from

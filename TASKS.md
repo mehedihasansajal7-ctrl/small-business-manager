@@ -1,4 +1,4 @@
-﻿# TASKS.md â€” the 18 phases, marked honestly
+ TASKS.md â€” the 18 phases, marked honestly
 
 Evidence is a **file path**, a **test name**, or **captured command output**. Nothing here is
 marked DONE on the strength of intent. The measurement timestamp and the full command

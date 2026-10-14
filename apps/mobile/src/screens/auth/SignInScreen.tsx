@@ -3,10 +3,10 @@ import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { useAuth, authErrorMessage } from '../../auth/AuthProvider';
-import { Button, Card, Field, Notice, Screen } from '../../components';
+import { Button, Card, Field, Notice, Screen, Segmented } from '../../components';
 import { APP_INFO } from '../../config/env';
 import { BUILD_TIME_API_URL, getApiBaseUrl, probeServer, resetApiBaseUrl, setApiBaseUrl } from '../../config/server-url';
-import { useI18n } from '../../i18n';
+import { useI18n, type AppLocale } from '../../i18n';
 import { useNetwork } from '../../lib/network';
 import { useTheme } from '../../theme';
 import type { AuthStackParamList } from '../../navigation/types';
@@ -27,7 +27,7 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'SignIn'>;
  */
 export function SignInScreen({ navigation }: Props) {
   const { colors, spacing, typography } = useTheme();
-  const { t } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const { signIn } = useAuth();
   const { online } = useNetwork();
   const [email, setEmail] = useState('');
@@ -79,6 +79,20 @@ export function SignInScreen({ navigation }: Props) {
 
   return (
     <Screen title={t('app.name')} subtitle={t('app.tagline')}>
+      {/*
+        The language switcher lives HERE, on the pre-login screen, and not only in
+        Settings: a partner who cannot read the current language could otherwise
+        never find the setting that changes it, because Settings is behind sign-in.
+      */}
+      <Segmented
+        options={[
+          { value: 'bn-BD' as AppLocale, label: 'বাংলা' },
+          { value: 'en' as AppLocale, label: 'English' },
+        ]}
+        value={locale}
+        onChange={(value) => void setLocale(value)}
+      />
+
       {!online ? <Notice tone="warning" body={t('auth.needInternet')} /> : null}
       {error ? <Notice tone="danger" body={error} /> : null}
 

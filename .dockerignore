@@ -1,0 +1,31 @@
+# Keep the build context small and reproducible. Everything here is rebuilt inside
+# the image, so host copies would only slow the upload down and risk stale files.
+
+**/node_modules
+**/dist
+**/.expo
+**/.expo-export-check
+**/data
+**/coverage
+**/.test-data
+
+# mobile app: not needed for the server image (built for Android in CI)
+apps/mobile
+apps/mobile/**
+
+# docs and CI metadata
+docs
+.github
+*.md
+
+# local state / secrets — never sent to a build server
+.env
+.env.*
+!.env.example
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.keystore
+**/*.jks
+.git
+.gitignore
