@@ -88,20 +88,35 @@ default. For local HTTP browsing only, set `INSECURE_COOKIES=1` (the API reports
 ### 1.5 Let your partners' phones reach the same PC (still à§³0)
 
 ```bash
-# .env
-HOST=0.0.0.0          # bind to the LAN, not just localhost
+npm run api:lan          # binds 0.0.0.0:8787 and prints the address to use on the phone
 ```
 
-Then, on each partner's phone (the Expo app):
+It refuses to suggest WSL / Hyper-V / Docker / hotspot adapters, because choosing one of those
+produces a URL that silently never answers — which looks exactly like a broken server.
 
-```bash
-cd apps/mobile
-npm install           # Expo's dependency tree is large; this is a one-off, explicit step
-EXPO_PUBLIC_API_URL=http://192.168.0.20:8787 npm run android
+Then, on the phone (the installed APK, or a dev build):
+
+1. Sign-in screen → **Advanced: which server?**
+2. Type the printed address, e.g. `http://172.17.7.90:8787`
+3. Tap **Test and save this server** → it must say *"Reachable"*.
+4. Now create the account / sign in. The address is saved, so this is a one-off.
+
+(With a source build you can also bake it in: `EXPO_PUBLIC_API_URL=http://172.17.7.90:8787 npm run android`.)
+
+**If the phone still cannot connect**, Windows Firewall is the usual reason. In an **admin**
+PowerShell:
+
+```powershell
+netsh advfirewall firewall add rule name="SBM API 8787" dir=in action=allow protocol=TCP localport=8787
 ```
 
-Replace `192.168.0.20` with **your** machine's LAN IP. The default
-`http://10.0.2.2:8787` only works inside an Android emulator.
+Two honest limits: the phone must be on the same Wi-Fi as the PC, and the API must be running
+while people use the app. For partners in different places, see section 2.
+
+> DO NOT use Openship for this project. The owner keeps Openship for office work and has asked
+> for it to stay out of this personal project (2026-10-14). `apps/api/Dockerfile` is deliberately
+> host-agnostic, so it also runs on any other container host — or on this PC, which is what this
+> section does.
 
 > **Attachments note:** photos are stored on the server and are **not** shared with a partner
 > who is offline. The API says so in its own response. This is deliberate.
