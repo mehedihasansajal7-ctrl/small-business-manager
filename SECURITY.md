@@ -1,9 +1,8 @@
 # SECURITY.md
 
 Scope: the code in this repository as it exists now. Everything stated as *implemented* points
-at a file and a line of behaviour. Everything that is missing is listed in §11 — please read
-that section; there are two findings there that matter before you put this in front of real
-money.
+at a file and a line of behaviour. §11 records the security findings raised during this build —
+**both of which were fixed and are now covered by regression tests** (the audit trail is kept).
 
 > ### Status
 > **Nothing in this project has been penetration-tested, audited or deployed.** The controls
@@ -490,44 +489,99 @@ limitation message.
 
 ---
 
-## 11. Known security gaps and findings — read this before going live
+## 11. Security findings — and their current status
 
-### 11.1 Finding: low-privilege members can read cost data through sync pull **and** CSV export
+> **Status update (same session as this document was written): the two findings below were
+> fixed and are now covered by regression tests.** The fix landed in `apps/api/src/sync.ts`,
+> `apps/api/src/repository.ts` and `apps/api/src/routes.ts`, and the tests are
+> `cost-visibility leaks (regression tests)` (3 tests) and
+> `member permission escalation guardrails` (3 tests) in `apps/api/test/api.test.ts`.
+> Sections 11.1 and 11.2 are kept in full because an audit trail of *how* the hole existed is
+> more useful than a silently tidy file.
 
-Two independent paths return full cost/financial detail to a role that the permission matrix
-says must not see it (verified by reading the code):
+### 11.1 ✅ FIXED — cost data leaked through sync pull **and** CSV export
 
-1. **`GET /api/sync/pull`** requires only membership — **no `assertPermission`** — and
-   `SyncService.pull()` returns `stockMovements` (including `unit_cost`),
+Two independent paths returned full cost/financial detail to a role that the permission matrix
+says must not see it:
+
+1. **`GET /api/sync/pull`** required only membership — **no `assertPermission`** — and
+   `SyncService.pull()` returned `stockMovements` (including `unit_cost`),
    `journalEntries`/`journalLines` (every account, debit and credit, including COGS and
    expense accounts) and the `sales`/`purchases` cost columns, for the whole business.
-2. **`GET /api/reports/export/:table`** requires `report.export`, which **`manager`** (not
-   `viewer`) holds. The allowlist includes **`journal_lines`** — i.e. a manager who is
-   deliberately denied `financial_reports.view` can download the entire general ledger as CSV.
+2. **`GET /api/reports/export/:table`** required only `report.export`, which **`manager`**
+   (and `inventory_manager`, `farm_manager`) hold while being denied
+   `financial_reports.view`. The allowlist included **`journal_lines`** — a manager who was
+   deliberately denied financial visibility could download the entire general ledger as CSV.
 
-A `viewer` or `cashier` denied `financial_reports.view`/`purchase.cost.view` therefore obtains
-the same numbers anyway, which contradicts the owner's cost-visibility setting.
+**Fix applied.** `SyncService.pull()` is now permission-aware and *removes the columns*, not
+just the UI affordance:
 
-**Mitigation needed:** permission-filter both payloads (or omit cost columns/ledger rows for
-roles without the cost permissions) and add tests asserting that a cashier's pull and a
-manager's CSV export contain no cost fields. Until then, treat `viewer`/`cashier`/`manager`
-accounts as cost-visible.
+| Field group | Hidden unless the caller holds |
+|---|---|
+| `products.purchase_price`, `products.tax_rate` | `purchase.cost.view` |
+| `purchases.subtotal`, `purchases.tax`, `stock_movements.unit_cost`, `sale_lines.unit_cost`, `purchase_lines.unit_cost` | `purchase.cost.view` |
+| `sales.cogs` (margin) | `financial_reports.view` |
+| `harvests.cost_basis`, `harvests.unit_cost` | `farming.cost.view` |
+| `journal_entries`, `journal_lines` (the entire ledger) | `financial_reports.view` — withheld in full, because a line-level view cannot be trimmed usefully |
+| `journal_lines.partner_id` | `partner_capital.view` |
+| `cost_allocations` | `farming.cost.view` |
+| `sync_conflicts.detail` (raw payloads) | `financial_reports.view` |
 
-### 11.2 Finding: `member.manage` permits self-granting `business.transfer_ownership`
+The pull now also returns a `costVisibility` object
+(`unitCosts`, `cogsAndMargins`, `financialReports`, `farmingCosts`, `partnerCapital`) so a client
+can be explicit about what it did and did not receive.
+
+The CSV export map now names **both** the permission the export needs and the permission
+required to see each hidden column:
+
+```
+journal_lines / journal_entries → financial_reports.view   (and report.export)
+harvests / cost_sources / cost_allocations → farming.cost.view
+partner_capital → partner_capital.view
+sales → sale.view           (hides cogs unless financial_reports.view)
+purchases → purchase.view   (hides subtotal/tax unless purchase.cost.view)
+stock_movements → inventory.view   (hides unit_cost unless purchase.cost.view)
+products → product.view     (hides purchase_price/tax_rate unless purchase.cost.view)
+```
+
+**Regression tests** (`cost-visibility leaks (regression tests)`):
+
+- `never ships unit costs, COGS or the journal to a role that may not see them` — asserts a
+  cashier's pull has no `purchase_price`, `tax_rate`, `cogs`, `unit_cost`, `subtotal` or `tax`,
+  that `journalEntries`/`journalLines`/`costAllocations` are empty, and that the string
+  `58.00` (a real unit cost) appears nowhere in the whole payload — while the owner's pull
+  still contains it.
+- `gives a manager purchase costs but still withholds margins and the journal` — a manager
+  keeps `unit_cost` but receives no `cogs` and no ledger.
+- `refuses a ledger CSV export without the sensitivity permission, and trims cost columns
+  otherwise` — `journal_lines` export is `403` for a manager and a cashier, `200` for the
+  owner; a manager's sales CSV has no `cogs` column; `partner_capital` export is owner-only.
+
+### 11.2 ✅ FIXED — `member.manage` allowed self-granting `business.transfer_ownership`
 
 `Repository.permissions()` applies per-member `grants` unconditionally, and `updateMember`
-writes `patch.grants` without restricting **which** permissions may be granted. Admin holds
-`member.manage`, so an admin can grant themselves `business.transfer_ownership` (and
+wrote `patch.grants` without restricting **which** permissions may be granted. Admin holds
+`member.manage`, so an admin could grant itself `business.transfer_ownership` (and
 `business.delete`) and then transfer ownership — exactly what the role matrix reserves for an
-owner. Verified in the current `apps/api/src/repository.ts`.
+owner.
 
-Note the two layers may *disagree*: the Postgres port's `has_business_permission()` reads a
-seeded `role_permissions` table plus `business_settings`, and the Postgres `business_members`
-schema may not carry per-member grants at all. Confirm the intended behaviour before choosing a
-fix.
+**Fix applied** — `updateMember` now enforces five rules before it writes anything:
 
-**Mitigation needed:** forbid granting a permission the caller does not itself hold (or
-restrict grants to a safe subset), and add a test.
+| # | Rule | Failure |
+|---|---|---|
+| 1 | Per-member `grants`/`denials` are an **owner-only** action | `403 Only the owner can change per-member permission overrides` |
+| 2 | Nobody may edit their **own** overrides (no self-escalation, even for an owner) | `400 You cannot change your own permission overrides` |
+| 3 | Only the owner may touch an **owner's** row (so an admin cannot deny the owner's permissions) | `403 Only the owner can change another owner` |
+| 4 | An **admin cannot modify another admin** (two admins cannot fight over access) | `403 Only the owner can change another admin` |
+| 5 | Nobody may **grant a permission they do not themselves hold**, and unknown permission names are rejected | `403 You cannot grant a permission you do not hold: …` / `400 Unknown permission: …` |
+
+An empty patch is also refused (`400 Nothing to update`) instead of silently succeeding.
+
+**Regression tests** (`member permission escalation guardrails`): an admin's attempt to grant
+itself `business.transfer_ownership` is `403` and its `grants` stay `[]`; an admin cannot deny
+an owner's permission or change another admin; an admin *can* still manage lower roles; the
+owner can grant a permission (and the grant takes effect) but cannot edit its own overrides;
+unknown permission names are `400`.
 
 ### 11.3 RLS exists in SQL but has never run
 
@@ -555,15 +609,15 @@ tenant's session (`supabase/README.md` §3), then write the adapter (R2).
 | `x-forwarded-for` is trusted | a client that can set that header can rotate its rate-limit key unless a trusted proxy strips it |
 | Sessions last 30 days by default | `SESSION_TTL_HOURS=720`; no idle timeout, no re-auth for sensitive actions |
 | No encryption at rest | the SQLite file and `DATA_DIR/.session_secret` are plaintext on disk; a full-disk backup of `DATA_DIR` contains everything |
-| Attachment MIME not verified by magic bytes | the client's `content-type` is stored verbatim (compare the SFUWT project, which *does* magic-byte validate uploads) |
+| Attachment MIME not verified by magic bytes | the client's `content-type` is stored verbatim (compare the SFUWT project, which *does* magic-byte validate uploads). The **download** path does verify a SHA-256 checksum of the stored bytes before serving them |
 | Inconsistent export auditing | the CSV export is **not** audited; the JSON backup **and restore** are |
 | Failed logins are not audited | only successful ones (`auth.login`) |
-| No dependency/SCA scanning, no CI | there is no CI configuration in this repo |
+| No dependency/SCA scanning | a GitHub Actions workflow (`.github/workflows/ci.yml`) now runs typecheck + all four test suites + the web build, but there is still no SCA/dependency scan |
 | Error messages can echo input | `VALIDATION` messages include field names and, in places, the rejected value; no stack traces are returned (a generic `INTERNAL` message is used for unexpected errors) |
 | `FarmingError` may map to `500` | `NO_TARGETS`/`ZERO_BASIS`/`OVER_ALLOCATION` are input errors but are not in the classifier |
 | No account lockout | repeated failures are only rate-limited |
 | `viewer` has no `ai.use` but *does* have `inventory.view`/`report.view` | intended, noted so it is not mistaken for a bug |
-| `GET /api/sync/pull` is registered twice in `routes.ts` | harmless (first match wins) but it is dead code |
+| ~~`GET /api/sync/pull` is registered twice in `routes.ts`~~ | **not actually the case** — checked; every route path is registered exactly once, and no duplicate path/method pair exists |
 
 ---
 

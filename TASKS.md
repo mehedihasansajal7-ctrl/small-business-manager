@@ -1,28 +1,28 @@
-# TASKS.md — the 18 phases, marked honestly
+﻿# TASKS.md â€” the 18 phases, marked honestly
 
 Evidence is a **file path**, a **test name**, or **captured command output**. Nothing here is
 marked DONE on the strength of intent. The measurement timestamp and the full command
 transcript are in [`TESTING.md`](./TESTING.md).
 
-Legend: **DONE** = built *and* verified by a test/build/command · **PARTIAL** = real code
-exists but something material is unverified or missing · **NOT STARTED** = no code.
+Legend: **DONE** = built *and* verified by a test/build/command Â· **PARTIAL** = real code
+exists but something material is unverified or missing Â· **NOT STARTED** = no code.
 
-> ⚠️ The working tree was being written **actively** while this snapshot was taken
+> âš ï¸ The working tree was being written **actively** while this snapshot was taken
 > (2026-10-14). Re-run the commands in `TESTING.md` before trusting a number.
 
 ---
 
-## Phase 1 — Repository audit and plan — **DONE**
+## Phase 1 â€” Repository audit and plan â€” **DONE**
 
 - No prior Small Business Manager source existed to reconcile (the parent folder holds
-  unrelated projects: `sfuwt-dashboard`, `tms`, `zakat-platform`, …).
+  unrelated projects: `sfuwt-dashboard`, `tms`, `zakat-platform`, â€¦).
 - Baseline architecture, tasks, risks and file map created; the living risk list is
-  `IMPLEMENTATION_PLAN.md` §3 (R1–R14).
+  `IMPLEMENTATION_PLAN.md` Â§3 (R1â€“R14).
 - Layout decision recorded: `docs/DECISIONS.md` ADR-008 (one domain package, not eight).
 
-## Phase 2 — Foundation — **DONE**
+## Phase 2 â€” Foundation â€” **DONE**
 
-- npm workspaces (`packages/*`, `apps/api`, `apps/web`, `supabase`) — `package.json`.
+- npm workspaces (`packages/*`, `apps/api`, `apps/web`, `supabase`) â€” `package.json`.
 - `tsconfig.base.json`: `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`,
   `verbatimModuleSyntax`, `isolatedModules`, `NodeNext`, ES2022.
 - `.env.example` (83 lines) with **placeholders only**, zero-credential local defaults.
@@ -34,16 +34,16 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   not part of `npm run verify`.
 - Evidence: `npm run typecheck` passes for **all four** workspaces (see `TESTING.md`).
 
-## Phase 3 — Auth and multi-partner tenancy — **DONE** (with one deviation)
+## Phase 3 â€” Auth and multi-partner tenancy â€” **DONE** (with one deviation)
 
 - `apps/api/src/auth.ts`: scrypt (`keylen 64`, 16-byte salt), `timingSafeEqual`,
   dummy-hash timing equalisation on an unknown email, HMAC-SHA256-signed session cookie
   (`HttpOnly` + `Secure` + `SameSite=Lax`), server-side revocable sessions with expiry pruning.
 - `Repository.createBusiness` (owner membership + default `Main Store` location),
   `createInvite`/`acceptInvite`/`revokeInvite`/`updateMember`/`listAuditLog`.
-- 7 roles × 53 permissions in `packages/domain/src/permissions.ts`, with per-member
+- 7 roles Ã— 53 permissions in `packages/domain/src/permissions.ts`, with per-member
   grants/denials (denial wins) and owner-configurable visibility widening.
-- 2–5 partner guidance (`partnerCountGuidance`) is guidance, not a hard cap — the schema is
+- 2â€“5 partner guidance (`partnerCountGuidance`) is guidance, not a hard cap â€” the schema is
   not capped, so a future plan can raise it without a migration.
 - Invite security: 120-bit uniform code, SHA-256 at rest only, 72 h TTL, single use, optional
   email binding, revocable, `role: 'owner'` refused at creation.
@@ -51,14 +51,14 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   The Postgres/RLS path now exists in `supabase/` (see Phase 3b) but has never run against a
   live server.
 - Evidence: `apps/api/test/security.test.ts` (12 tests) + `packages/domain/test/{permissions,tenancy}.test.ts`
-  (16 + 10 tests) — e.g. `never lets one business read or mutate another business`,
+  (16 + 10 tests) â€” e.g. `never lets one business read or mutate another business`,
   `lets one partner belong to two businesses and keeps their data apart`,
   `rejects a member who has been suspended`, `rejects an invite that has expired`,
   `never stores the raw code`, `blocks demoting or removing the only owner`.
 
-## Phase 3b — Shared-cloud database: PostgreSQL/Supabase with RLS — **PARTIAL**
+## Phase 3b â€” Shared-cloud database: PostgreSQL/Supabase with RLS â€” **PARTIAL**
 
-- `supabase/migrations/0001…0007` (7 files, 1226 lines in `0007` alone) + `supabase/functions/0000…0180`
+- `supabase/migrations/0001â€¦0007` (7 files, 1226 lines in `0007` alone) + `supabase/functions/0000â€¦0180`
   (10 files) + `supabase/seed.sql`.
 - **148 `CREATE POLICY`** statements; every tenant table gets `enable` **and** `force row level
   security`; `security definer` helpers with a pinned `search_path`; append-only tables get
@@ -66,16 +66,16 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   deferrable constraint trigger); a deferrable trigger proving shared costs allocate exactly.
 - 9 transactional posting RPCs: `post_sale`, `receive_purchase`, `move_stock`, `post_harvest`,
   `allocate_cost`, `post_payment`, `create_journal_entry`, `close_cycle`, `void_document`.
-- Money is `numeric(20,6)` — asserted by the test
+- Money is `numeric(20,6)` â€” asserted by the test
   `keeps every money/quantity column exact (numeric), never float/real/double precision`.
 - **Why PARTIAL, not DONE:** there is no PostgreSQL server in this environment, so the
   migrations were **never executed**. `supabase/tests/` reads the SQL and asserts structural
   invariants (38 tests). That is a static proof, not a live one. Run them against a real
   Supabase project before relying on RLS.
 
-## Phase 4 — Database and repository layer — **DONE**
+## Phase 4 â€” Database and repository layer â€” **DONE**
 
-- `apps/api/src/db.ts`: migrations **v1–v6**, **46 tables**, tracked by `PRAGMA user_version`,
+- `apps/api/src/db.ts`: migrations **v1â€“v6**, **46 tables**, tracked by `PRAGMA user_version`,
   each applied inside `BEGIN IMMEDIATE` with `ROLLBACK` on failure; `foreign_keys = ON`, WAL
   for file DBs, `busy_timeout = 5000`; a **re-entrant** `transaction()` so a sync batch and the
   posting services share one transaction; `nextReference()` as an atomic upsert-with-`RETURNING`
@@ -87,12 +87,12 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
 - Evidence: `/api/health` returns `"schemaVersion":6` (captured); every API test exercises the
   repository against a real in-memory database.
 
-## Phase 5 — Offline sync — **DONE on the server; PARTIAL end-to-end**
+## Phase 5 â€” Offline sync â€” **DONE on the server; PARTIAL end-to-end**
 
 - `packages/domain/src/sync.ts`: `OutboxEvent` shape, `createOutboxEvent`, business-scoped
   `idempotencyKey = business:aggregate:event`, canonical-JSON `payloadHash` with a
   **dependency-free SHA-256** (verified against the NIST vectors), `retryDelayMs` (1 s base,
-  ×2, 15 min cap, ±25 % jitter), `shouldRetry`/`statusAfterFailure`, `classifyRevision`,
+  Ã—2, 15 min cap, Â±25 % jitter), `shouldRetry`/`statusAfterFailure`, `classifyRevision`,
   `analyseFieldConflict`/`mergeDraftFields`, `HIGH_RISK_EVENTS`, the 6-state status machine
   and the bilingual `syncBanner`.
 - `apps/api/src/sync.ts`: exactly-once application via `processed_events` (PRIMARY KEY on the
@@ -105,13 +105,13 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   `apps/mobile/src/offline/*` (SQLite outbox). 
 - **What is NOT verified:** a kill-mid-sync / restart e2e, and two real devices racing on the
   last 10 kg. The server-side behaviour is tested; the device-side guarantee is not proven here.
-- Evidence: `applies an outbox event exactly once, even when retried` (same event twice → one
+- Evidence: `applies an outbox event exactly once, even when retried` (same event twice â†’ one
   sale, stock unchanged, message matches `/idempotent/i`),
   `refuses to apply access changes from an offline queue`,
   `reports a conflict when a partner edits a record that changed on the server`,
   `pulls only the caller own business changes`.
 
-## Phase 6 — Shared inventory, units, lots — **DONE**
+## Phase 6 â€” Shared inventory, units, lots â€” **DONE**
 
 - `packages/domain/src/inventory.ts`: append-only ledger, derived balances,
   `weightedAverageValuation` with a **per-movement cost snapshot** so historical COGS never
@@ -120,30 +120,30 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
 - `packages/domain/src/units.ts`: 6 dimensions; **BD land** (katha 720 sqft, bigha 20 katha,
   decimal/shotangsho) and **BD weight** (maund 37.3242 kg, seer) units; explicit,
   note-required cross-dimension conversions; integer-only units; `bagConversion` helper.
-- API: `/api/inventory`, `/api/inventory/movements`, `/api/inventory/adjust` (reason ≥ 5 chars
+- API: `/api/inventory`, `/api/inventory/movements`, `/api/inventory/adjust` (reason â‰¥ 5 chars
   required), `/api/inventory/transfer` (two legs, one transaction, no gain/loss),
   `/api/inventory/opening`, `/api/reports/stock-valuation`.
 - Evidence: 18 inventory + 11 units + 13 validation (timezone) tests; API test
   `moves stock between locations without changing quantity, value or profit`.
 
-## Phase 7 — Purchases and sales — **DONE** (core)
+## Phase 7 â€” Purchases and sales â€” **DONE** (core)
 
 - `createPurchase`/`createSale` post stock + journal + COGS in one transaction; lot creation;
   discount requires `sale.discount.apply`; negative-stock override requires
   `inventory.adjust.approve` **and** a reason; customer receipts and supplier payments;
   derived receivables/payables; `/api/reports/export/:table` CSV (10-table allowlist, UTF-8 BOM).
 - **Corrections:** `voidDocument` posts an audited **reversal** of both the journal and the
-  stock movements and sets `status = 'VOID'`/`'RETURNED'` — posted history is never mutated.
+  stock movements and sets `status = 'VOID'`/`'RETURNED'` â€” posted history is never mutated.
 - **Not built:** separate return *documents* with their own lines, credit-limit enforcement,
   print/PDF.
 - Evidence: `records purchase, sale, receipt and expense with correct double entry`
-  (`netRevenue 3300.00`, `cogs 2900.00`, `netProfit −600.00`, `payables 3800.00`),
-  `refuses negative stock by default, even for the owner` (409 → 400 without a reason → 200
+  (`netRevenue 3300.00`, `cogs 2900.00`, `netProfit âˆ’600.00`, `payables 3800.00`),
+  `refuses negative stock by default, even for the owner` (409 â†’ 400 without a reason â†’ 200
   with one), `rejects a discount without the discount permission` (403),
   `voids a sale with an audited reversal instead of editing history`,
   `requires the void permission and a reason`.
 
-## Phase 8 — Finance and accounting — **DONE** (core)
+## Phase 8 â€” Finance and accounting â€” **DONE** (core)
 
 - 39-account fixed chart (`packages/domain/src/accounting.ts`), incl. `3050 Opening Balance
   Equity`; templates for sale (with COGS), purchase, receipt, payment, transfer, income/expense
@@ -162,18 +162,18 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
 - **Not built:** bad debt (`5500`), depreciation (`5600`), loans/interest (`2100`/`5700`),
   period closing to `3200`, payroll. Accounts exist; no policy, no endpoint.
 
-## Phase 9 — Farming setup — **DONE**
+## Phase 9 â€” Farming setup â€” **DONE**
 
 - Migrations v4: `farms`, `farm_units` (9 kinds), `production_cycles`, and the typed child
   tables. `farmingTypes` auto-enabled on first use of a type.
-- Evidence: API `runs input purchase → issue → labour → harvest → sale with correct costing`
-  asserts farm → shed → cycle creation (`200`).
+- Evidence: API `runs input purchase â†’ issue â†’ labour â†’ harvest â†’ sale with correct costing`
+  asserts farm â†’ shed â†’ cycle creation (`200`).
 
-## Phase 10 — Farming operations — **DONE** (core)
+## Phase 10 â€” Farming operations â€” **DONE** (core)
 
 - `recordFarmingEvent` handles input issue (valued at the weighted-average cost, assigned
   **once**), direct labour, machinery/fuel, veterinary, utilities, packaging, transport,
-  overhead, observation, mortality, waste, internal use; mortality ≥ 25 units is flagged
+  overhead, observation, mortality, waste, internal use; mortality â‰¥ 25 units is flagged
   `abnormal` and returns an **escalation** message.
 - `closeCycle` releases the remainder with `CLOSING_REMAINDER`.
 - Evidence: `flags a large mortality event for escalation`
@@ -182,7 +182,7 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
 - **Not built:** scheduled/planned operations and missing-operation alerts, breeding,
   milk/egg yield as first-class outputs, animal transfers between units.
 
-## Phase 11 — Costing and sales integration — **DONE**
+## Phase 11 â€” Costing and sales integration â€” **DONE**
 
 - `allocateCost` over 7 bases with exact largest-remainder distribution and an explicit
   `unallocated` remainder; **deterministic residual** (largest weight, then lowest cycle id);
@@ -191,17 +191,17 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
 - Traceability: a harvest can create the finished product; sales of that product are
   attributed back to the cycle for revenue/COGS.
 - Evidence: `never assigns the whole batch cost to a partial harvest`; API test
-  `runs input purchase → issue → labour → harvest → sale` (cost 9000 over a planned 1000 kg →
+  `runs input purchase â†’ issue â†’ labour â†’ harvest â†’ sale` (cost 9000 over a planned 1000 kg â†’
   a 500 kg harvest is assigned exactly `4500.00`, `capped === false`, `4500.00` left in the
   batch); `splits a shared cost across cycles without losing a poysha`
-  (10:20 of 1000 → 333.33/666.67, sums to 1000).
+  (10:20 of 1000 â†’ 333.33/666.67, sums to 1000).
 
-## Phase 12 — Android and Web UX — **PARTIAL (code + build present, not device-verified)**
+## Phase 12 â€” Android and Web UX â€” **PARTIAL (code + build present, not device-verified)**
 
 - `apps/web`: 16 screens, routing, i18n (`bn`/`bn-BD` + `en`), theme, offline layer
   (IndexedDB outbox, sync worker, merge, cached list), `SyncBanner`, `InstallPrompt`,
   `public/manifest.webmanifest`, `public/sw.js`. **`vite build` succeeds** (351 kB JS /
-  101 kB gzip) — captured. Types are exact-mirrored in `api/types*.ts`.
+  101 kB gzip) â€” captured. Types are exact-mirrored in `api/types*.ts`.
 - `apps/mobile`: Expo SDK 52 + React Native 0.76, 41 screens across auth/onboarding/
   dashboard/catalog/sales/purchases/inventory/finance/farming/team/reports/settings/sync/ai,
   stack + bottom-tab navigators, SQLite offline store, `OfflineBanner`, `SyncStatusScreen`,
@@ -212,11 +212,11 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   built** (no JDK/Android SDK). Nothing about layout, accessibility or real offline behaviour
   has been observed.
 
-## Phase 13 — AI agent foundation — **DONE (server)**
+## Phase 13 â€” AI agent foundation â€” **DONE (server)**
 
 - `AIProvider`/`ResearchProvider` interfaces; three modes with the exact fallback chain
-  (not configured → fallback; provider error/timeout → fallback + limitation; empty answer →
-  fallback + limitation) — `apps/api/src/ai.ts`.
+  (not configured â†’ fallback; provider error/timeout â†’ fallback + limitation; empty answer â†’
+  fallback + limitation) â€” `apps/api/src/ai.ts`.
 - Secret-safe config (`describeConfig` exposes booleans, never keys); permission-scoped
   `buildContext`; per-business+user rate limiting; bilingual output.
 - Evidence: `answers in offline fallback mode and says so` (`mode === 'fallback'`, text matches
@@ -225,7 +225,7 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   `never leaks restricted cost data to a role that cannot see it` (a cashier's `factsUsed`
   contains `restricted`, and the secret amount appears nowhere).
 
-## Phase 14 — AI web research and safety — **PARTIAL**
+## Phase 14 â€” AI web research and safety â€” **PARTIAL**
 
 - Curated source list (6 government/FAO links) always available and clearly labelled
   `CURATED_LINK` with a "not a live search result" note; `classifySource`
@@ -240,13 +240,13 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   returns `cached: true`).
 - **NOT verified:** no live search provider is configured or tested; there are **no tests**
   for prompt-injection resistance, dose/PHI/REI refusal with no official source, citation-URL
-  rejection, provider timeouts, or AI rate limiting. See `AI_AGENT_DESIGN.md` §11.2.
+  rejection, provider timeouts, or AI rate limiting. See `AI_AGENT_DESIGN.md` Â§11.2.
 
-## Phase 15 — Exports and backup — **DONE** (core)
+## Phase 15 â€” Exports and backup â€” **DONE** (core)
 
 - CSV export with a UTF-8 BOM so Bangla opens correctly in Excel (10-table allowlist);
   `GET /api/reports/backup` (full per-business JSON across ~30 tables); **`POST /api/reports/restore`**
-  — owner-only, **empty-workspace-only**, refuses a backup whose journal does not balance,
+  â€” owner-only, **empty-workspace-only**, refuses a backup whose journal does not balance,
   re-keys every id and remaps every declared FK plus known textual references, runs in one
   transaction, and reports what it did; a **daily partial JSON snapshot** job; and an
   **integrity/reconciliation report** with 9 independent derived checks.
@@ -257,9 +257,9 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   `refuses to restore a backup whose journal does not balance`;
   `passes on a healthy set of books and detects a broken ledger`.
 
-## Phase 16 — Quality and security pass — **PARTIAL**
+## Phase 16 â€” Quality and security pass â€” **PARTIAL**
 
-- **325 automated tests pass** — 148 domain, 76 api, 63 web, 38 supabase (captured).
+- **336 automated tests pass** â€” 148 domain, 87 api, 63 web, 38 supabase (captured).
   `npm run typecheck` passes for all four workspaces; `npm run build` succeeds
   (domain + api + web).
 - Covered: tenant isolation, permissions/least privilege, cost redaction, invite expiry &
@@ -269,13 +269,13 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   valuation redaction, integrity checks, outbox/backoff/merge logic, and the HTTP layer
   (20 tests).
 - **NOT done:** no dependency/SCA scan, no penetration test, no accessibility pass, no CI,
-  and **the two open security findings in `SECURITY.md` §11**
+  and **the two open security findings in `SECURITY.md` Â§11**
   (sync-pull cost leakage; admin self-granting `business.transfer_ownership`).
 
-## Phase 17 — Free deployment preparation — **PARTIAL**
+## Phase 17 â€” Free deployment preparation â€” **PARTIAL**
 
 - `.env.example` complete with zero-credential defaults; `local` mode verified end-to-end
-  (booted, `/api/health` → `200` `schemaVersion: 6`, `/api/status`, `/api/meta` → 93 routes);
+  (booted, `/api/health` â†’ `200` `schemaVersion: 6`, `/api/status`, `/api/meta` â†’ 93 routes);
   seed verified (full summary + `ALL CHECKS PASSED`); web build produced; `supabase/README.md`
   has exact migration/RLS-verification steps; `DEPLOYMENT_FREE.md` written with exact commands
   for local, a user-owned Supabase project, static hosting, three no-cost AI routes, and APK
@@ -283,7 +283,7 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
 - **NOT done:** **nothing was deployed.** No URL, no cloud resource, no free-tier verification,
   **no APK artifact** (no JDK/Android SDK in this environment).
 
-## Phase 18 — Final verification and handover — **DONE**
+## Phase 18 â€” Final verification and handover â€” **DONE**
 
 - README, TASKS, IMPLEMENTATION_PLAN, ARCHITECTURE, DATABASE_SCHEMA, SYNC_DESIGN, SECURITY,
   TESTING, DEPLOYMENT_FREE, ACCOUNTING_RULES, AI_AGENT_DESIGN and the four `docs/` files
@@ -291,52 +291,52 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
 
 ---
 
-## 🚧 Blocked / needs a human (cannot be done from this environment)
+## ðŸš§ Blocked / needs a human (cannot be done from this environment)
 
 | Blocker | What is needed | Consequence if not done |
 |---|---|---|
 | **Android APK** | JDK 17 + Android SDK (`expo prebuild`, then `gradlew assembleRelease`), or a free Expo account for `eas build` | no installable Android app; only the Expo dev client route works |
-| **Live Postgres/Supabase** | the user's own free Supabase project (or any Postgres ≥ 15) to run `supabase/migrations` + `functions` | RLS and the 9 posting RPCs stay **statically tested only** |
+| **Live Postgres/Supabase** | the user's own free Supabase project (or any Postgres â‰¥ 15) to run `supabase/migrations` + `functions` | RLS and the 9 posting RPCs stay **statically tested only** |
 | **Hosted AI provider key** | a free OpenAI-compatible endpoint key, or a local Ollama install | the AI stays in offline fallback mode (fully usable, but not generative) |
 | **Live search provider** | a self-hosted SearXNG URL or a free search API | research returns curated official links instead of live results |
 | **A real web host / domain** | a free static host account (Cloudflare Pages / Netlify / GitHub Pages) | the web build stays on disk |
-| **Two real devices + two partners** | people and phones | the offline e2e (disconnect → reconnect → no duplicates) cannot be proven |
-| **A card-free email/SMS provider** | — | invites are shared as codes/links by the owner; nothing is emailed. **By design** (no paid email) |
+| **Two real devices + two partners** | people and phones | the offline e2e (disconnect â†’ reconnect â†’ no duplicates) cannot be proven |
+| **A card-free email/SMS provider** | â€” | invites are shared as codes/links by the owner; nothing is emailed. **By design** (no paid email) |
 | **Free-tier quota verification** | opening each provider's pricing page | `docs/FREE_TIER_LIMITS.md` stays unverified |
 | **A qualified accountant / vet / extension officer** | a person | the tax/accounting and agronomy limits documented in `ACCOUNTING_RULES.md` and `AI_AGENT_DESIGN.md` stay open |
 
 ---
 
-## ✅ Verified vs ⚠️ unverified — mirroring the master prompt's Definition of Done
+## âœ… Verified vs âš ï¸ unverified â€” mirroring the master prompt's Definition of Done
 
 | # | Definition-of-Done item | Status | Evidence / gap |
 |---|---|---|---|
-| 1 | Android and Web source exist and **build successfully** | ⚠️ **PARTIAL** | Web: `vite build` succeeded (captured). Android: code + config exist, but **no APK build was run** (no JDK/SDK) |
-| 2 | Core business workflows implemented, not demo-only | ✅ **YES (server)** | purchase/sale/receipt/payment/transfer/income-expense/partner capital/opening/void/restore/reports all real and tested; UI not device-verified |
-| 3 | Farming supports crop/horticulture/livestock/poultry/aquaculture end-to-end | ✅ **YES** | one engine covers all 5 types; proven end-to-end for poultry + crop; species-specific depth (breeding, milk/egg) not built |
-| 4 | Two users join one business, different roles, shared synced data; tenant isolation tested | ✅ **YES (server)** | `never lets one business read or mutate another business`, `lets an owner invite a partner…different role`, `enforces least privilege server-side…`. Not proven across two physical devices |
-| 5 | 2–5 partner onboarding + safe invitation mechanism | ✅ **YES (server)** | 120-bit code, SHA-256 at rest, 72 h TTL, single use, email binding, revocable, `owner` role refused; `partnerCountGuidance` warns outside 2–5 |
-| 6 | Offline records survive restart; durable outbox syncs idempotently; conflicts visible & recoverable | ⚠️ **PARTIAL** | **Server: proven.** Client outbox code + 17 unit tests + a 10-test protocol integration test against a real API. **A restart/kill e2e and a two-device race were NOT run** |
-| 7 | Inventory reconciles to the ledger; posted events cannot duplicate | ✅ **YES** | balances are *derived*; `stock_movements.event_id` + `idempotency_key` are UNIQUE; the integrity report re-checks it; the retry test proves no duplicate |
-| 8 | Input costs allocated once; partial-harvest costs and COGS correct; cash vs profit distinguished | ✅ **YES** | `never assigns the whole batch cost to a partial harvest`, `splits a shared cost…without losing a poysha`, `profit is not the same as cash` |
-| 9 | Automated unit/integration/security/sync tests run; actual results documented | ✅ **YES** | **325 tests pass** (148 + 76 + 63 + 38); full transcript in `TESTING.md` |
-| 10 | `.env.example` placeholders only; no secrets committed or bundled | ✅ **YES** | `.env.example` header states placeholders; `.gitignore` excludes `.env`/`.env.*`; no key appears in any client bundle source |
-| 11 | Free deployment and APK instructions tested as far as access permits; no paid dependency mandatory | ⚠️ **PARTIAL** | instructions written; **nothing deployed, no free tier verified, no APK**; `local` mode (zero cost, zero credentials) **was** verified |
-| 12 | README, free deployment guide, backup/restore, known limitations complete | ✅ **YES** | README §8 limitations; `DEPLOYMENT_FREE.md`; backup **and restore** implemented and tested |
-| 13 | AI supports help, planning, suggestions, cited research; pesticide guidance follows the guardrails | ⚠️ **PARTIAL** | help/suggestions/curated citations/plan-saving **work and are tested**; **no live provider or live search was tested**; guardrails are prompt-level with **no test** |
-| 14 | AI works with no mandatory paid service, reports its mode, respects permissions, fabricates no sources, cannot act | ✅ **YES** | `AI_PROVIDER=none` default; `mode`/`provider` on every answer and stored per message; cost redaction test; curated links labelled; no write path from an AI answer exists |
-| 15 | Final handover states what works, exact commands, test results, APK path if generated, manual steps | ✅ **YES** | this file + `TESTING.md` + `README.md`. **APK path: not generated** |
+| 1 | Android and Web source exist and **build successfully** | âš ï¸ **PARTIAL** | Web: `vite build` succeeded (captured). Android: code + config exist, but **no APK build was run** (no JDK/SDK) |
+| 2 | Core business workflows implemented, not demo-only | âœ… **YES (server)** | purchase/sale/receipt/payment/transfer/income-expense/partner capital/opening/void/restore/reports all real and tested; UI not device-verified |
+| 3 | Farming supports crop/horticulture/livestock/poultry/aquaculture end-to-end | âœ… **YES** | one engine covers all 5 types; proven end-to-end for poultry + crop; species-specific depth (breeding, milk/egg) not built |
+| 4 | Two users join one business, different roles, shared synced data; tenant isolation tested | âœ… **YES (server)** | `never lets one business read or mutate another business`, `lets an owner invite a partnerâ€¦different role`, `enforces least privilege server-sideâ€¦`. Not proven across two physical devices |
+| 5 | 2â€“5 partner onboarding + safe invitation mechanism | âœ… **YES (server)** | 120-bit code, SHA-256 at rest, 72 h TTL, single use, email binding, revocable, `owner` role refused; `partnerCountGuidance` warns outside 2â€“5 |
+| 6 | Offline records survive restart; durable outbox syncs idempotently; conflicts visible & recoverable | âš ï¸ **PARTIAL** | **Server: proven.** Client outbox code + 17 unit tests + a 10-test protocol integration test against a real API. **A restart/kill e2e and a two-device race were NOT run** |
+| 7 | Inventory reconciles to the ledger; posted events cannot duplicate | âœ… **YES** | balances are *derived*; `stock_movements.event_id` + `idempotency_key` are UNIQUE; the integrity report re-checks it; the retry test proves no duplicate |
+| 8 | Input costs allocated once; partial-harvest costs and COGS correct; cash vs profit distinguished | âœ… **YES** | `never assigns the whole batch cost to a partial harvest`, `splits a shared costâ€¦without losing a poysha`, `profit is not the same as cash` |
+| 9 | Automated unit/integration/security/sync tests run; actual results documented | âœ… **YES** | **336 tests pass** (148 + 87 + 63 + 38); full transcript in `TESTING.md` |
+| 10 | `.env.example` placeholders only; no secrets committed or bundled | âœ… **YES** | `.env.example` header states placeholders; `.gitignore` excludes `.env`/`.env.*`; no key appears in any client bundle source |
+| 11 | Free deployment and APK instructions tested as far as access permits; no paid dependency mandatory | âš ï¸ **PARTIAL** | instructions written; **nothing deployed, no free tier verified, no APK**; `local` mode (zero cost, zero credentials) **was** verified |
+| 12 | README, free deployment guide, backup/restore, known limitations complete | âœ… **YES** | README Â§8 limitations; `DEPLOYMENT_FREE.md`; backup **and restore** implemented and tested |
+| 13 | AI supports help, planning, suggestions, cited research; pesticide guidance follows the guardrails | âš ï¸ **PARTIAL** | help/suggestions/curated citations/plan-saving **work and are tested**; **no live provider or live search was tested**; guardrails are prompt-level with **no test** |
+| 14 | AI works with no mandatory paid service, reports its mode, respects permissions, fabricates no sources, cannot act | âœ… **YES** | `AI_PROVIDER=none` default; `mode`/`provider` on every answer and stored per message; cost redaction test; curated links labelled; no write path from an AI answer exists |
+| 15 | Final handover states what works, exact commands, test results, APK path if generated, manual steps | âœ… **YES** | this file + `TESTING.md` + `README.md`. **APK path: not generated** |
 
-**Legend:** ✅ = verified with evidence · ⚠️ = real code exists but a material part is
-unverified or missing · ❌ = no code (none of the five DoD-critical items is ❌).
+**Legend:** âœ… = verified with evidence Â· âš ï¸ = real code exists but a material part is
+unverified or missing Â· âŒ = no code (none of the five DoD-critical items is âŒ).
 
 ### Recommended next actions, in order
 
-1. Fix the two open security findings (`SECURITY.md` §11.1–11.2) — both are small, and one
+1. Fix the two open security findings (`SECURITY.md` Â§11.1â€“11.2) â€” both are small, and one
    lets an admin take over ownership.
-2. Run one real end-to-end on two devices: register → invite → sale → disconnect → reconnect →
-   verify no duplicates. That single test converts the largest ⚠️ into ✅.
+2. Run one real end-to-end on two devices: register â†’ invite â†’ sale â†’ disconnect â†’ reconnect â†’
+   verify no duplicates. That single test converts the largest âš ï¸ into âœ….
 3. Run `supabase/migrations` against a real free Supabase project and prove RLS from a second
    tenant session.
 4. Build one APK (JDK 17 + Android SDK) and sideload it.
-5. Add the missing AI safety tests (`AI_AGENT_DESIGN.md` §11.2).
+5. Add the missing AI safety tests (`AI_AGENT_DESIGN.md` Â§11.2).
