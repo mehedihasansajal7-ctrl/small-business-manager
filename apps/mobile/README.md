@@ -14,6 +14,16 @@ It is one of three clients over the same contract:
 
 ---
 
+> **Get the APK:** a ready-to-install Android build is published to the public
+> [`small-business-manager-downloads`](https://github.com/mehedihasansajal7-ctrl/small-business-manager-downloads/releases/latest)
+> repository (built by `.github/workflows/android-apk.yml`, so no local Android SDK is needed).
+> After installing, open **Sign in → Advanced: which server?** and enter the address of your API
+> (for example `http://192.168.0.20:8787`), tap **Test and save this server**, then sign in. The
+> address is stored on the device (`src/config/server-url.ts`), so one APK works against any
+> server — that is why the build-time URL is only a default.
+
+---
+
 ## 1. The three rules this app is built around
 
 1. **Money and quantities are never floating point.** Every amount is parsed and calculated with
