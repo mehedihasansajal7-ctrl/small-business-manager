@@ -6,6 +6,7 @@ import { DEFAULT_LOCALE, isLocale, translate, type Locale, type MessageKey, type
 import { applyTheme, persistTheme, readThemeChoice, resolveTheme, systemPrefersDark, type ResolvedTheme, type ThemeChoice } from '../theme/theme';
 import { getSyncCoordinator } from '../offline/sync';
 import { deviceId } from '../offline/localStorage';
+import { META_KEYS, getMeta, setMeta } from '../offline/db';
 import type { OutboxContext } from '../offline/outbox';
 import { PREF_KEYS, readPreference, writePreference } from './preferences';
 import { navigate } from './router';
@@ -115,13 +116,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const loadBusiness = useCallback(async (activeBusinessId: string | null) => {
     if (!activeBusinessId) {
       setBusiness(null);
+      await setMeta(META_KEYS.currentBusiness, null);
       return;
     }
     try {
-      setBusiness(await businessApi.current());
+      const current = await businessApi.current();
+      setBusiness(current);
+      // Cached so the app can open (and gate the UI) with no connection.
+      await setMeta(META_KEYS.currentBusiness, current);
     } catch (error) {
       if (error instanceof ApiError && error.code === 'NO_BUSINESS') {
         setBusiness(null);
+        await setMeta(META_KEYS.currentBusiness, null);
         return;
       }
       throw error;
@@ -132,14 +138,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const session = await authApi.me();
       setMe(session);
+      await setMeta(META_KEYS.session, session);
       await loadBusiness(session.activeBusinessId);
+      return;
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setMe(null);
         setBusiness(null);
+        await setMeta(META_KEYS.session, null);
+        await setMeta(META_KEYS.currentBusiness, null);
         return;
       }
-      throw error;
+      // Offline (or the server is unreachable): fall back to the last known
+      // session and business so the workspace still opens from the local cache.
+      const [cachedSession, cachedBusiness] = await Promise.all([
+        getMeta<MeResponse>(META_KEYS.session),
+        getMeta<BusinessCurrent>(META_KEYS.currentBusiness),
+      ]);
+      if (cachedSession) {
+        setMe(cachedSession);
+        setBusiness(cachedBusiness ?? null);
+        return;
+      }
+      setMe(null);
+      setBusiness(null);
     }
   }, [loadBusiness]);
 
@@ -200,6 +222,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       /* the local session is cleared regardless */
     }
     getSyncCoordinator().stop();
+    try {
+      await setMeta(META_KEYS.session, null);
+      await setMeta(META_KEYS.currentBusiness, null);
+    } catch {
+      /* IndexedDB may be unavailable; the in-memory state is what matters */
+    }
     setMe(null);
     setBusiness(null);
     navigate('/sign-in', { replace: true });

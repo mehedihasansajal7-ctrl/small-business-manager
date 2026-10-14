@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ESLint configuration (eslintrc format — the format Expo SDK 52 projects use).
  *
  * `eslint-config-expo` composes the React, React Hooks, React Native and

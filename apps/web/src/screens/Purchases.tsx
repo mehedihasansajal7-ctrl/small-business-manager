@@ -171,33 +171,41 @@ export function PurchasesScreen() {
           </div>
 
           <AsyncState loading={products.loading} error={products.error} data={products.data} onRetry={products.reload}>
-            {(productRows) => (
-              <div className="lines">
-                {lines.map((line, index) => (
-                  <div className="line" key={line.key}>
-                    <span className="line__index">{index + 1}</span>
-                    <div className="line__product">
-                      <SelectInput
-                        label={t('sales.product')}
-                        value={line.productId}
-                        onValueChange={(value) => {
-                          const product = productRows.find((row) => row.id === value);
-                          updateLine(line.key, { productId: value, unit: product?.unit ?? '', unitCost: product?.purchasePrice ?? '' });
-                        }}
-                        placeholder={t('sales.product')}
-                        options={productRows.map((row) => ({ value: row.id, label: `${row.name} (${row.unit})` }))}
-                      />
-                    </div>
-                    <TextInput label={t('common.quantity')} inputMode="decimal" value={line.quantity} onValueChange={(value) => updateLine(line.key, { quantity: value })} />
-                    <TextInput label={t('common.unit')} value={line.unit} onValueChange={(value) => updateLine(line.key, { unit: value })} />
-                    <TextInput label={t('purchases.unitCost')} inputMode="decimal" value={line.unitCost} onValueChange={(value) => updateLine(line.key, { unitCost: value })} />
-                    <Button variant="ghost" onClick={() => setLines((current) => current.filter((row) => row.key !== line.key))} aria-label={t('sales.removeLine')}>
-                      ✕
-                    </Button>
+            {(productRows) => {
+              // Products created offline have no server id yet, so they cannot be
+              // referenced by a purchase until they have synced.
+              const selectable = productRows.filter((row) => !isLocalId(row.id));
+              return (
+                <>
+                  {selectable.length !== productRows.length ? <Notice level="warn">{productRows.length - selectable.length} {t('sync.localProposal')}</Notice> : null}
+                  <div className="lines">
+                    {lines.map((line, index) => (
+                      <div className="line" key={line.key}>
+                        <span className="line__index">{index + 1}</span>
+                        <div className="line__product">
+                          <SelectInput
+                            label={t('sales.product')}
+                            value={line.productId}
+                            onValueChange={(value) => {
+                              const product = selectable.find((row) => row.id === value);
+                              updateLine(line.key, { productId: value, unit: product?.unit ?? '', unitCost: product?.purchasePrice ?? '' });
+                            }}
+                            placeholder={t('sales.product')}
+                            options={selectable.map((row) => ({ value: row.id, label: `${row.name} (${row.unit})` }))}
+                          />
+                        </div>
+                        <TextInput label={t('common.quantity')} inputMode="decimal" value={line.quantity} onValueChange={(value) => updateLine(line.key, { quantity: value })} />
+                        <TextInput label={t('common.unit')} value={line.unit} onValueChange={(value) => updateLine(line.key, { unit: value })} />
+                        <TextInput label={t('purchases.unitCost')} inputMode="decimal" value={line.unitCost} onValueChange={(value) => updateLine(line.key, { unitCost: value })} />
+                        <Button variant="ghost" onClick={() => setLines((current) => current.filter((row) => row.key !== line.key))} aria-label={t('sales.removeLine')}>
+                          ✕
+                        </Button>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                </>
+              );
+            }}
           </AsyncState>
 
           <Button variant="secondary" onClick={() => setLines((current) => [...current, emptyLine()])}>

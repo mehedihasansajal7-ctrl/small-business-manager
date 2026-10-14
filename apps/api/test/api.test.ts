@@ -1054,6 +1054,76 @@ describe('printable reports', () => {
   });
 });
 
+describe('alerts', () => {
+  it('raises low stock, expiry, mortality, harvest, receivable and inactivity alerts', async () => {
+    const w = await setupBusiness('alerts@test.sbm');
+    const farm = await w.client.post<{ id: string }>('/api/farming/farms', { name: 'Farm' });
+    const unit = await w.client.post<{ id: string }>('/api/farming/units', { farmId: farm.body.id, kind: 'POULTRY_HOUSE', name: 'Shed' });
+    const cycle = await w.client.post<{ id: string }>('/api/farming/cycles', {
+      farmId: farm.body.id,
+      unitId: unit.body.id,
+      farmingType: 'POULTRY',
+      title: 'Batch A',
+      startDate: '2026-04-01',
+      expectedEndDate: '2026-04-10',
+      startingPopulation: '1000',
+    });
+
+    // Stock below its reorder level.
+    await w.client.post('/api/inventory/opening', { itemId: w.productId, quantity: '5', unit: 'kg', unitCost: '58', date: '2026-04-01' });
+    // A lot that is already expired.
+    const lotty = await w.client.post<{ id: string }>('/api/products', { name: 'Vaccine', unit: 'pcs', kind: 'INPUT', trackLots: true });
+    await w.client.post('/api/purchases', {
+      documentDate: '2026-04-02',
+      paid: '500',
+      lines: [{ productId: lotty.body.id, quantity: '10', unit: 'pcs', unitCost: '50', lotNo: 'VAC-OLD', expiryDate: '2026-04-03' }],
+    });
+    // A credit sale for the overdue-receivable alert.
+    await w.client.post('/api/sales', { documentDate: '2026-04-05', customerId: w.customerId, cashReceived: '0', lines: [{ productId: w.productId, quantity: '1', unit: 'kg', unitPrice: '68' }] });
+    // Heavy mortality and no harvest.
+    await w.client.post(`/api/farming/cycles/${cycle.body.id}/events`, { eventType: 'MORTALITY', occurredOn: '2026-04-06', quantity: '300', unit: 'pcs', reason: 'Sudden deaths' });
+
+    const result = await w.client.get<{ counts: { critical: number; warning: number; total: number }; alerts: { kind: string; severity: string; detail: string }[]; businessDate: string }>('/api/alerts');
+    expect(result.status).toBe(200);
+    const kinds = result.body.alerts.map((alert) => alert.kind);
+    expect(kinds).toContain('LOW_STOCK');
+    expect(kinds).toContain('LOT_EXPIRED');
+    expect(kinds).toContain('HIGH_MORTALITY');
+    expect(kinds).toContain('EXPECTED_HARVEST');
+    expect(kinds).toContain('OVERDUE_RECEIVABLE');
+    expect(kinds).toContain('MISSED_OPERATION');
+    expect(result.body.counts.critical).toBeGreaterThan(0);
+
+    // The mortality alert carries the escalation advice, not a diagnosis.
+    const mortality = result.body.alerts.find((alert) => alert.kind === 'HIGH_MORTALITY');
+    expect(mortality?.detail).toMatch(/veterinarian|livestock office/i);
+
+    // Critical items are listed first.
+    const severities = result.body.alerts.map((alert) => alert.severity);
+    const firstInfo = severities.indexOf('info');
+    const lastCritical = severities.lastIndexOf('critical');
+    if (firstInfo !== -1 && lastCritical !== -1) expect(lastCritical).toBeLessThan(firstInfo);
+  });
+
+  it('honours the threshold parameters and needs report.view', async () => {
+    const w = await setupBusiness('alertsthreshold@test.sbm');
+    await w.client.post('/api/inventory/opening', { itemId: w.productId, quantity: '5', unit: 'kg', unitCost: '58', date: '2026-04-01' });
+
+    const wide = await w.client.get<{ counts: { total: number } }>('/api/alerts?staleDays=0');
+    expect(wide.status).toBe(200);
+    expect((await w.client.get('/api/alerts?staleDays=-1')).status).toBe(400);
+
+    const invite = await w.client.post<{ code: string }>('/api/members/invites', { role: 'viewer', email: 'alerts.viewer@test.sbm' });
+    const viewer = client();
+    await viewer.post('/api/auth/register', { email: 'alerts.viewer@test.sbm', password: 'password123', displayName: 'Viewer' });
+    await viewer.post('/api/invites/accept', { code: invite.body.code });
+    const members = await w.client.get<{ id: string; email: string }[]>('/api/members');
+    const viewerMember = members.body.find((m) => m.email === 'alerts.viewer@test.sbm');
+    await w.client.patch(`/api/members/${viewerMember?.id}`, { denials: ['report.view'] });
+    expect((await viewer.get('/api/alerts')).status).toBe(403);
+  });
+});
+
 describe('validation and limits', () => {
   it('rejects malformed input instead of storing it', async () => {
     const w = await setupBusiness('valid@test.sbm');

@@ -479,6 +479,22 @@ export function buildRouter(deps: RouteDeps): Router {
   router.get('/api/reports/cash-flow', (ctx) => repo.cashFlowReport(requireCaller(ctx), range(ctx)));
   router.get('/api/reports/stock-valuation', (ctx) => repo.stockValuationReport(requireCaller(ctx), ctx.query.get('locationId') ?? undefined));
   router.get('/api/reports/integrity', (ctx) => repo.integrityReport(requireCaller(ctx)));
+  router.get('/api/alerts', (ctx) => {
+    const caller = requireCaller(ctx);
+    const number = (key: string, fallback: number) => {
+      const raw = ctx.query.get(key);
+      if (raw === null) return fallback;
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed < 0) throw HttpError.badRequest('VALIDATION', `${key} must be a non-negative number`);
+      return parsed;
+    };
+    return repo.alerts(caller, {
+      expiryDays: number('expiryDays', 30),
+      harvestDays: number('harvestDays', 14),
+      receivableDays: number('receivableDays', 30),
+      staleDays: number('staleDays', 7),
+    });
+  });
   router.get('/api/reports/receivables', (ctx) => {
     const caller = requireCaller(ctx);
     repo.assertPermission(caller, 'report.view');

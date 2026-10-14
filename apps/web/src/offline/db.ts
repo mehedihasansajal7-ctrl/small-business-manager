@@ -226,4 +226,8 @@ export const META_KEYS = {
   lastSyncedAt: 'lastSyncedAt',
   serverTime: 'serverTime',
   lastError: 'lastError',
+  /** Last known `GET /api/auth/me` payload, so the app opens offline. */
+  session: 'session',
+  /** Last known `GET /api/businesses/current` payload (permissions included). */
+  currentBusiness: 'currentBusiness',
 } as const;

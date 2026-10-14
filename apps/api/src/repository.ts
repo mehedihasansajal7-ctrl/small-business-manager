@@ -4,6 +4,7 @@ import {
   Decimal,
   StockError,
   addMoney,
+  addDays,
   allocateCost,
   assignHarvestCost,
   balanceSheet,
@@ -26,9 +27,11 @@ import {
   currentUnitCost,
   dec,
   defaultBusiness,
+  formatMoney,
   generateInviteCode,
   inviteExpiry,
   isValidEmail,
+  localDateString,
   money,
   mulMoney,
   normalizeInviteCode,
@@ -1660,6 +1663,216 @@ export class Repository {
         note: 'Documents were re-keyed with new ids and every reference was remapped. Members, users and the audit log were NOT restored: re-invite your partners and check Reports after the import.',
       };
     });
+  }
+
+  /**
+   * Alert feed for the dashboard.
+   *
+   * Every alert is DERIVED from stored data at read time (nothing is a stored
+   * flag that can go stale), and each one says why it fired so a partner can
+   * verify it instead of trusting it.
+   */
+  alerts(caller: Caller, options: { expiryDays?: number; harvestDays?: number; receivableDays?: number; staleDays?: number } = {}) {
+    this.assertPermission(caller, 'report.view');
+    const businessId = caller.business.id;
+    const currency = caller.business.currency;
+    const expiryDays = options.expiryDays ?? 30;
+    const harvestDays = options.harvestDays ?? 14;
+    const receivableDays = options.receivableDays ?? 30;
+    const staleDays = options.staleDays ?? 7;
+    const today = localDateString(new Date(), caller.business.timezone);
+    const addDaysIso = (iso: string, days: number) => addDays(iso, days);
+
+    type Alert = {
+      kind: string;
+      severity: 'info' | 'warning' | 'critical';
+      title: string;
+      titleBn: string;
+      detail: string;
+      entityType?: string;
+      entityId?: string;
+      amount?: string;
+      href?: string;
+    };
+    const alerts: Alert[] = [];
+
+    // 1. Low stock (at or below the reorder level).
+    for (const row of this.listStock(caller) as { itemId: string; name: string; onHand: string; unit: string; reorderLevel: string | null; belowReorder: boolean }[]) {
+      if (!row.belowReorder) continue;
+      alerts.push({
+        kind: 'LOW_STOCK',
+        severity: Number(row.onHand) <= 0 ? 'critical' : 'warning',
+        title: `Low stock: ${row.name}`,
+        titleBn: `মজুদ কম: ${row.name}`,
+        detail: `${row.onHand} ${row.unit} on hand against a reorder level of ${row.reorderLevel ?? '0'} ${row.unit}.`,
+        entityType: 'product',
+        entityId: row.itemId,
+        href: '/inventory',
+      });
+    }
+
+    // 2. Lots expiring soon, and lots already expired but still in stock.
+    const lotStock = new Map<string, number>();
+    for (const movement of this.db.all<{ lot_id: string | null; direction: string; quantity: string }>(
+      'SELECT lot_id, direction, quantity FROM stock_movements WHERE business_id = ? AND lot_id IS NOT NULL',
+      [businessId],
+    )) {
+      if (!movement.lot_id) continue;
+      const current = lotStock.get(movement.lot_id) ?? 0;
+      lotStock.set(movement.lot_id, movement.direction === 'IN' ? current + Number(movement.quantity) : current - Number(movement.quantity));
+    }
+    const lots = this.db.all<{ id: string; item_id: string; expiry_date: string; unit: string; lot_no: string | null; name: string }>(
+      `SELECT l.id, l.item_id, l.expiry_date, l.unit_cost AS unit, l.lot_no, p.name, p.unit AS item_unit
+       FROM stock_lots l JOIN products p ON p.id = l.item_id
+       WHERE l.business_id = ? AND l.expiry_date IS NOT NULL AND l.expiry_date <= ?
+       ORDER BY l.expiry_date`,
+      [businessId, addDaysIso(today, expiryDays)],
+    );
+    for (const lot of lots) {
+      const remaining = lotStock.get(lot.id) ?? 0;
+      if (remaining <= 0) continue;
+      const expired = lot.expiry_date < today;
+      alerts.push({
+        kind: expired ? 'LOT_EXPIRED' : 'LOT_EXPIRING',
+        severity: expired ? 'critical' : 'warning',
+        title: `${expired ? 'Expired' : 'Expiring'} lot: ${lot.name}${lot.lot_no ? ` (${lot.lot_no})` : ''}`,
+        titleBn: expired ? `মেয়াদোত্তীর্ণ: ${lot.name}` : `মেয়াদ শেষ হচ্ছে: ${lot.name}`,
+        detail: `${remaining} in stock with expiry ${lot.expiry_date}${expired ? ' (already past)' : ` (within ${expiryDays} days)`}.`,
+        entityType: 'stock_lot',
+        entityId: lot.id,
+        href: '/inventory',
+      });
+    }
+
+    // 3. High mortality in an active cycle.
+    const mortality = this.db.all<{ cycle_id: string; reference: string; starting_population: string | null; lost: string }>(
+      `SELECT c.id AS cycle_id, c.reference, c.starting_population,
+              COALESCE((SELECT SUM(CAST(m.quantity AS REAL)) FROM mortality_losses m WHERE m.cycle_id = c.id), 0) AS lost
+       FROM production_cycles c
+       WHERE c.business_id = ? AND c.status IN ('ACTIVE','HARVESTING') AND c.starting_population IS NOT NULL`,
+      [businessId],
+    );
+    for (const row of mortality) {
+      const starting = Number(row.starting_population ?? 0);
+      if (starting <= 0) continue;
+      const percent = (Number(row.lost) / starting) * 100;
+      if (percent <= 10) continue;
+      alerts.push({
+        kind: 'HIGH_MORTALITY',
+        severity: percent > 25 ? 'critical' : 'warning',
+        title: `High mortality in ${row.reference}`,
+        titleBn: `${row.reference}-এ বেশি মৃত্যু`,
+        detail: `${Number(row.lost).toFixed(0)} of ${starting} lost (${percent.toFixed(1)}%). If the loss is sudden or unexplained, contact a licensed veterinarian or the local livestock office.`,
+        entityType: 'production_cycle',
+        entityId: row.cycle_id,
+        href: '/farming',
+      });
+    }
+
+    // 4. Expected harvest window reached (or passed).
+    const dueCycles = this.db.all<{ id: string; reference: string; title: string; expected_end_date: string; harvested: string }>(
+      `SELECT c.id, c.reference, c.title, c.expected_end_date,
+              COALESCE((SELECT SUM(CAST(h.quantity AS REAL)) FROM harvests h WHERE h.cycle_id = c.id), 0) AS harvested
+       FROM production_cycles c
+       WHERE c.business_id = ? AND c.status IN ('ACTIVE','HARVESTING') AND c.expected_end_date IS NOT NULL AND c.expected_end_date <= ?`,
+      [businessId, addDaysIso(today, harvestDays)],
+    );
+    for (const cycle of dueCycles) {
+      const late = cycle.expected_end_date < today;
+      alerts.push({
+        kind: 'EXPECTED_HARVEST',
+        severity: late && Number(cycle.harvested) === 0 ? 'warning' : 'info',
+        title: `${late ? 'Harvest overdue' : 'Harvest due'}: ${cycle.title}`,
+        titleBn: `${cycle.title}: ফসল কাটার সময়`,
+        detail: `Expected end ${cycle.expected_end_date}; recorded harvest so far ${Number(cycle.harvested).toFixed(2)}.`,
+        entityType: 'production_cycle',
+        entityId: cycle.id,
+        href: '/farming',
+      });
+    }
+
+    // 5. Active cycles with no activity for a while (a possibly missed operation).
+    const stale = this.db.all<{ id: string; reference: string; title: string; last_activity: string | null }>(
+      `SELECT c.id, c.reference, c.title,
+              (SELECT MAX(e.occurred_on) FROM farming_events e WHERE e.cycle_id = c.id) AS last_activity
+       FROM production_cycles c
+       WHERE c.business_id = ? AND c.status IN ('ACTIVE','HARVESTING')`,
+      [businessId],
+    );
+    for (const cycle of stale) {
+      const reference = cycle.last_activity ?? null;
+      if (reference && reference >= addDaysIso(today, -staleDays)) continue;
+      alerts.push({
+        kind: 'MISSED_OPERATION',
+        severity: 'info',
+        title: `No recent activity: ${cycle.title}`,
+        titleBn: `${cycle.title}: সাম্প্রতিক কোনো কার্যক্রম নেই`,
+        detail: reference
+          ? `Last recorded activity was ${reference}, more than ${staleDays} days ago. Check whether a scheduled operation was missed.`
+          : `This active cycle has no recorded activity yet. Record the inputs and operations as they happen.`,
+        entityType: 'production_cycle',
+        entityId: cycle.id,
+        href: '/farming',
+      });
+    }
+
+    // 6. Overdue receivables.
+    for (const customer of this.db.all<{ id: string; name: string; oldest: string | null }>(
+      `SELECT c.id, c.name, MIN(s.document_date) AS oldest
+       FROM customers c JOIN sales s ON s.customer_id = c.id
+       WHERE c.business_id = ? AND s.status = 'POSTED'
+       GROUP BY c.id`,
+      [businessId],
+    )) {
+      const outstanding = this.receivableFor(businessId, customer.id);
+      if (outstanding.amount.isZero() || outstanding.amount.isNegative()) continue;
+      const oldest = customer.oldest ?? today;
+      const overdue = oldest < addDaysIso(today, -receivableDays);
+      alerts.push({
+        kind: 'OVERDUE_RECEIVABLE',
+        severity: overdue ? 'warning' : 'info',
+        title: `Unpaid receivable: ${customer.name}`,
+        titleBn: `${customer.name}: বাকি পাওনা`,
+        detail: `${formatMoney(outstanding)} outstanding; oldest unpaid sale ${oldest}${overdue ? `, older than ${receivableDays} days.` : '.'}`,
+        entityType: 'customer',
+        entityId: customer.id,
+        amount: outstanding.amount.toString(),
+        href: '/reports',
+      });
+    }
+
+    // 7. Unpaid supplier bills.
+    for (const supplier of this.db.all<{ id: string; name: string }>('SELECT id, name FROM suppliers WHERE business_id = ? AND is_active = 1', [businessId])) {
+      const payable = this.payableFor(businessId, supplier.id);
+      if (payable.amount.lte(0)) continue;
+      alerts.push({
+        kind: 'UNPAID_PAYABLE',
+        severity: 'info',
+        title: `Supplier balance: ${supplier.name}`,
+        titleBn: `${supplier.name}: প্রদেয়`,
+        detail: `${formatMoney(payable)} payable. Record the payment when it is made - it is not a new expense.`,
+        entityType: 'supplier',
+        entityId: supplier.id,
+        amount: payable.amount.toString(),
+        href: '/reports',
+      });
+    }
+
+    const order: Record<Alert['severity'], number> = { critical: 0, warning: 1, info: 2 };
+    alerts.sort((a, b) => order[a.severity] - order[b.severity] || a.kind.localeCompare(b.kind));
+    return {
+      generatedAt: new Date().toISOString(),
+      businessDate: today,
+      currency,
+      thresholds: { expiryDays, harvestDays, receivableDays, staleDays },
+      counts: {
+        critical: alerts.filter((a) => a.severity === 'critical').length,
+        warning: alerts.filter((a) => a.severity === 'warning').length,
+        info: alerts.filter((a) => a.severity === 'info').length,
+        total: alerts.length,
+      },
+      alerts,
+    };
   }
 
   /**

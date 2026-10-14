@@ -99,7 +99,11 @@ export class SyncCoordinator {
       addEventListener('online', this.onOnline);
       addEventListener('offline', this.onOffline);
     }
-    void this.refresh().then(() => this.syncNow());
+    // IndexedDB (and therefore the outbox) may be unavailable in a private
+    // window; the app must still render, so failures here are not fatal.
+    void this.refresh()
+      .then(() => this.syncNow())
+      .catch(() => undefined);
     this.timer = setInterval(() => {
       if (isOnline()) void this.syncNow();
       else void this.refresh();
@@ -129,10 +133,10 @@ export class SyncCoordinator {
 
   /** Re-read local state (outbox, last sync time, conflicts) without a network call. */
   async refresh(): Promise<SyncSnapshot> {
-    const outbox = await listOutbox();
+    const outbox = await listOutbox().catch(() => [] as OutboxEvent[]);
     const summary = summarize(outbox);
-    const lastSyncedAt = (await getMeta<string>(META_KEYS.lastSyncedAt)) ?? null;
-    const lastError = (await getMeta<string>(META_KEYS.lastError)) ?? null;
+    const lastSyncedAt = (await getMeta<string>(META_KEYS.lastSyncedAt).catch(() => undefined)) ?? null;
+    const lastError = (await getMeta<string>(META_KEYS.lastError).catch(() => undefined)) ?? null;
     this.patch({
       outbox,
       counts: summary.counts,

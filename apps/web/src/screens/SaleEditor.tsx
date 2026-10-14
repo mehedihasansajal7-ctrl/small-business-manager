@@ -59,6 +59,10 @@ export function SaleEditor({
 
   const canDiscount = hasPermission(permissions, 'sale.discount.apply');
   const canOverrideStock = hasPermission(permissions, 'inventory.adjust.approve');
+  // A product created on this device has no server id yet, so the server cannot
+  // resolve `productId` for it. Those rows stay out of the picker until they sync.
+  const selectable = products.filter((row) => !isLocalId(row.id));
+  const pendingCount = products.length - selectable.length;
 
   const totals = useMemo(
     () =>
@@ -183,6 +187,11 @@ export function SaleEditor({
       }
     >
       {error ? <Notice level="error">{error}</Notice> : null}
+      {pendingCount > 0 ? (
+        <Notice level="warn">
+          {pendingCount} {t('sync.localProposal')}
+        </Notice>
+      ) : null}
 
       <div className="grid grid--3">
         <TextInput label={t('common.date')} type="date" required value={documentDate} onValueChange={setDocumentDate} />
@@ -212,10 +221,7 @@ export function SaleEditor({
                 value={line.productId}
                 onValueChange={(value) => pickProduct(line.key, value)}
                 placeholder={t('sales.product')}
-                options={products.map((row) => ({
-                  value: row.id,
-                  label: isLocalId(row.id) ? `${row.name} — ${t('sync.localProposal')}` : `${row.name} (${row.onHand} ${row.unit})`,
-                }))}
+                options={selectable.map((row) => ({ value: row.id, label: `${row.name} (${row.onHand} ${row.unit})` }))}
               />
             </div>
             <TextInput label={t('common.quantity')} inputMode="decimal" value={line.quantity} onValueChange={(value) => updateLine(line.key, { quantity: value })} />

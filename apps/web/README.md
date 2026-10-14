@@ -99,10 +99,16 @@ and every 60 s:
    draft are skipped so an unsent edit is never clobbered.
 4. `purgeSyncedEvents()` drops confirmed events after 7 days.
 
-The header strip shows Offline / Pending / Syncing / Synced / Needs attention /
-Conflict at all times (`aria-live`), and `#/sync` shows the queue, the last
-successful sync, per-event attempts/errors, **Retry**, and open conflicts with
-*Keep mine* / *Keep server version* (`POST /api/sync/conflicts/:id/resolve`).
+* The header strip shows Offline / Pending / Syncing / Synced / Needs attention /
+  Conflict at all times (`aria-live`), and `#/sync` shows the queue, the last
+  successful sync, per-event attempts/errors, **Retry**, and open conflicts with
+  *Keep mine* / *Keep server version* (`POST /api/sync/conflicts/:id/resolve`).
+
+**Opening the app with no connection.** The last `GET /api/auth/me` and
+`GET /api/businesses/current` payloads are cached in the `meta` store, so a
+reload while offline rehydrates the session, the business and its permission list
+from the device instead of bouncing the user to sign-in. (Permissions come from
+that cached copy — the server still enforces them on every sync.)
 
 **What works offline:** sales, purchases, receipts, payments, transfers,
 income/expenses, partner capital, farming events/harvest/cycle close, and master
