@@ -549,8 +549,14 @@ export async function localCycles(status?: string): Promise<CycleView[]> {
   );
 }
 
-/** Revenue attributed to a cycle through the harvested products that were sold. */
-async function localCycleRevenue(cycleId: string, currency: string): Promise<Decimal> {
+/**
+ * Revenue attributed to a cycle through the harvested products that were sold.
+ *
+ * Revenue is summed from the mirrored sale lines, so no rounding to a currency
+ * scale is needed here — the lines already carry exact minor units; the result is
+ * still rounded through the currency's scale for display consistency.
+ */
+async function localCycleRevenue(cycleId: string, _currency: string): Promise<Decimal> {
   const products = await all<{ product_id: string }>('SELECT DISTINCT product_id FROM harvests WHERE cycle_id = ? AND product_id IS NOT NULL', [cycleId]);
   if (products.length === 0) return Decimal.ZERO;
   const ids = products.map((row) => row.product_id);

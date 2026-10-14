@@ -1,5 +1,5 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Text, View } from 'react-native';
 
 import { localDateString, monthStart } from '@sbm/domain';
@@ -44,7 +44,9 @@ export function ReportsHomeScreen(_props: Props) {
   const currency = business?.currency ?? 'BDT';
   const timezone = business?.timezone ?? 'Asia/Dhaka';
 
-  const range = { from: monthStart(new Date(), timezone), to: localDateString(new Date(), timezone) };
+  // Memoised so the loader's dependency list stays stable (an object literal per
+  // render would re-create the callback and re-run the loader in a loop).
+  const range = useMemo(() => ({ from: monthStart(new Date(), timezone), to: localDateString(new Date(), timezone) }), [timezone]);
 
   const loader = useCallback(async () => {
     const [pnl, sheet, flow, customers, suppliers] = await Promise.all([
@@ -55,7 +57,7 @@ export function ReportsHomeScreen(_props: Props) {
       can('report.view') ? localSuppliers() : Promise.resolve([]),
     ]);
     return { pnl, sheet, flow, customers, suppliers };
-  }, [can, range.from, range.to, currency]);
+  }, [can, range, currency]);
 
   const { data, loading, reload } = useAsyncData(loader, [loader]);
   useReloadOnFocus(reload);

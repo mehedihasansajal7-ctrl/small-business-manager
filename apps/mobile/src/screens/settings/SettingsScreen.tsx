@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import { Text, View } from 'react-native';
 
 import { CURRENCIES } from '@sbm/domain';
@@ -13,7 +13,7 @@ import { Button, Card, Divider, Field, ListRow, Notice, Screen, SectionTitle, Se
 import { APP_INFO, API_BASE_URL } from '../../config/env';
 import { resetDatabase } from '../../offline/db';
 import { localUnits } from '../../offline/repository';
-import { useI18n, LOCALES, type AppLocale } from '../../i18n';
+import { useI18n, type AppLocale } from '../../i18n';
 import { useNetwork } from '../../lib/network';
 import { useSync } from '../../lib/useSync';
 import { useTheme, type ThemeMode } from '../../theme';
@@ -155,10 +155,6 @@ export function SettingsScreen(_props: Props) {
 
   const units = localUnits();
 
-  const onReset = useCallback(() => {
-    void wipeLocal();
-  }, []);
-
   return (
     <Screen title={t('nav.settings')} subtitle={business?.name}>
       {!online ? <Notice tone="warning" body={t('auth.needInternet')} /> : null}
@@ -237,7 +233,7 @@ export function SettingsScreen(_props: Props) {
           </View>
         ))}
         <Divider />
-        <Button label={t('settings.resetLocal')} variant="danger" onPress={onReset} loading={busy === 'wipe'} fullWidth />
+        <Button label={t('settings.resetLocal')} variant="danger" onPress={() => void wipeLocal()} loading={busy === 'wipe'} fullWidth />
         <Text style={[typography.caption, { color: colors.danger, marginTop: spacing.sm }]}>{t('settings.resetWarning')}</Text>
       </Card>
 

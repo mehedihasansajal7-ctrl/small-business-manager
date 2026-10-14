@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { dec } from '@sbm/domain';
-import type { MessageKey } from '../i18n';
 import { ApiError } from '../api/client';
 import { catalog } from '../api/endpoints';
 import { farming as farmingApi, type FarmingEventType } from '../api/endpointsFarming';
@@ -15,24 +14,8 @@ import { Badge, Button, Card, CheckboxInput, Notice, PageHeader, SelectInput, Te
 import { useApp, useT } from '../state/AppContext';
 import { useResource } from '../offline/useSync';
 import { navigate } from '../state/router';
+import { COST_EVENT_TYPES, EVENT_TYPES, eventTypeLabel, offlineEventTypeFor } from './farmingEventLabels';
 import type { FarmingEventRow, ProductRow } from '../api/types';
-
-const EVENT_TYPES: readonly FarmingEventType[] = [
-  'INPUT_ISSUE',
-  'DIRECT_LABOUR',
-  'MACHINERY_FUEL',
-  'VETERINARY',
-  'UTILITIES',
-  'PACKAGING',
-  'TRANSPORT',
-  'OVERHEAD',
-  'INTERNAL_USE',
-  'OBSERVATION',
-  'MORTALITY',
-  'WASTE',
-];
-
-const COST_ONLY: readonly FarmingEventType[] = ['DIRECT_LABOUR', 'MACHINERY_FUEL', 'VETERINARY', 'UTILITIES', 'PACKAGING', 'TRANSPORT', 'OVERHEAD', 'INTERNAL_USE'];
 
 /** Cycle detail: events, harvest, profit report and cycle close. */
 export function CycleDetailScreen({ cycleId }: { readonly cycleId: string }) {
@@ -145,16 +128,7 @@ export function CycleDetailScreen({ cycleId }: { readonly cycleId: string }) {
           events.reload();
           profit.reload();
         } else {
-          const offlineEvent =
-            eventType === 'INPUT_ISSUE'
-              ? 'farming.input_issue'
-              : eventType === 'OBSERVATION'
-                ? 'farming.observe'
-                : eventType === 'MORTALITY'
-                  ? 'farming.mortality'
-                  : eventType === 'WASTE'
-                    ? ''
-                    : 'farming.cost';
+          const offlineEvent = offlineEventTypeFor(eventType);
           if (!offlineEvent) throw new Error(t('sync.unsupported'));
           await queueIt(offlineEvent, payload, newLocalId());
         }
@@ -327,7 +301,7 @@ export function CycleDetailScreen({ cycleId }: { readonly cycleId: string }) {
               </>
             ) : null}
 
-            {COST_ONLY.includes(eventType) ? (
+            {COST_EVENT_TYPES.includes(eventType) ? (
               <TextInput label={t('common.amount')} inputMode="decimal" required value={amount} onValueChange={setAmount} />
             ) : null}
 
@@ -383,22 +357,3 @@ export function CycleDetailScreen({ cycleId }: { readonly cycleId: string }) {
     </>
   );
 }
-
-function eventTypeLabel(type: FarmingEventType, t: (key: MessageKey) => string): string {
-  return t(eventKeyMap[type]);
-}
-
-const eventKeyMap = {
-  INPUT_ISSUE: 'farm.inputIssue',
-  DIRECT_LABOUR: 'farm.labour',
-  MACHINERY_FUEL: 'farm.machineryFuel',
-  VETERINARY: 'farm.veterinary',
-  UTILITIES: 'farm.utilities',
-  PACKAGING: 'farm.packaging',
-  TRANSPORT: 'farm.transport',
-  OVERHEAD: 'farm.overhead',
-  INTERNAL_USE: 'farm.internalUse',
-  OBSERVATION: 'farm.observation',
-  MORTALITY: 'farm.mortality',
-  WASTE: 'farm.waste',
-} as const;

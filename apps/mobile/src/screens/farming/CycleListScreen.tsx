@@ -29,7 +29,7 @@ export function CycleListScreen({ navigation, route }: Props) {
   const { t } = useI18n();
   const { business, businessId, can } = useAuth();
   const { online } = useNetwork();
-  const { summary, syncing, syncNow } = useSync();
+  const { syncing, syncNow } = useSync();
   const [filter, setFilter] = useState<Filter>('ACTIVE');
 
   const currency = business?.currency ?? 'BDT';

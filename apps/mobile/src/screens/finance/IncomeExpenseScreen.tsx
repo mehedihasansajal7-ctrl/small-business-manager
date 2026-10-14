@@ -1,5 +1,5 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Text } from 'react-native';
 
 import { STANDARD_ACCOUNTS, dec, localDateString } from '@sbm/domain';

@@ -25,7 +25,7 @@ export interface OfflineBannerProps {
  * nothing has been shared yet.
  */
 export function OfflineBanner({ online, pending, conflicts, lastSyncedAt, syncing, onSyncNow, compact }: OfflineBannerProps) {
-  const { colors, radius, spacing, typography, scheme } = useTheme();
+  const { radius, spacing, typography, scheme } = useTheme();
   const { language, t } = useI18n();
 
   const state = syncBanner({ online, pending, conflicts, lastSyncedAt });

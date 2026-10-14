@@ -43,8 +43,15 @@
   },
   "devDependencies": {
     "@types/react": "~18.3.12",
+    "@typescript-eslint/eslint-plugin": "^8.19.1",
+    "@typescript-eslint/parser": "^8.19.1",
     "eslint": "^8.57.1",
     "eslint-config-expo": "~8.0.1",
+    "eslint-import-resolver-typescript": "^3.7.0",
+    "eslint-plugin-expo": "^0.1.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-react": "^7.37.3",
+    "eslint-plugin-react-hooks": "^4.6.2",
     "ts-node": "^10.9.2",
     "typescript": "~5.7.2"
   },

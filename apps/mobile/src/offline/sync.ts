@@ -65,9 +65,12 @@ const PULLED_TABLES: readonly { readonly key: keyof PullResponse; readonly table
   { key: 'costAllocations', table: 'cost_allocations', columns: ['id', 'business_id', 'cost_source_id', 'cycle_id', 'basis', 'basis_value', 'share_ratio', 'currency', 'amount', 'created_by', 'created_at'] },
 ];
 
-/** Deletes that must be fanned out from the parent to its child rows. */
-const CHILD_TABLES = ['sale_lines', 'purchase_lines', 'journal_lines'] as const;
-
+/**
+ * The pull response carries whole rows, so a mirror table without a matching entry
+ * in `PULLED_TABLES` is simply never written. Deletes are not fanned out: the server
+ * soft-deletes master data (`products.deleted_at`, `is_active = 0`) and never hard
+ * deletes posted documents, so an upsert is always the correct local operation.
+ */
 let running = false;
 let lastSummary: SyncSummary | null = null;
 

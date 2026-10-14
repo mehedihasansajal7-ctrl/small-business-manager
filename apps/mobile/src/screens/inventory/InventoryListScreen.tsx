@@ -27,7 +27,7 @@ type Props = NativeStackScreenProps<InventoryStackParamList, 'InventoryList'>;
 export function InventoryListScreen({ navigation }: Props) {
   const { colors, typography, spacing } = useTheme();
   const { t } = useI18n();
-  const { business, businessId, can } = useAuth();
+  const { business, can } = useAuth();
   const { online } = useNetwork();
   const { summary, syncing, syncNow } = useSync();
   const [search, setSearch] = useState('');

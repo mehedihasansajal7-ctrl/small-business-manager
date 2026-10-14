@@ -4,7 +4,7 @@ import { Text, View } from 'react-native';
 import { partnerCountGuidance } from '@sbm/domain';
 
 import { useAuth } from '../../auth/AuthProvider';
-import { Button, Card, ListRow, Notice, OfflineBanner, Screen, SectionTitle, Tag } from '../../components';
+import { Card, ListRow, Notice, OfflineBanner, Screen, SectionTitle, Tag } from '../../components';
 import { useI18n } from '../../i18n';
 import { useNetwork } from '../../lib/network';
 import { useSync } from '../../lib/useSync';
