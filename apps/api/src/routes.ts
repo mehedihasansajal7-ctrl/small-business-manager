@@ -337,6 +337,10 @@ export function buildRouter(deps: RouteDeps): Router {
   router.get('/api/inventory', (ctx) => repo.listStock(requireCaller(ctx)));
   router.get('/api/inventory/movements', (ctx) => repo.listMovements(requireCaller(ctx), ctx.query.get('itemId') ?? undefined));
 
+  router.post('/api/inventory/transfer', (ctx) => repo.transferStock(requireCaller(ctx), asRecord(ctx.body, 'body')));
+  router.post('/api/inventory/opening', (ctx) => repo.recordOpeningStock(requireCaller(ctx), asRecord(ctx.body, 'body')));
+  router.post('/api/finance/opening-balance', (ctx) => repo.recordOpeningBalance(requireCaller(ctx), asRecord(ctx.body, 'body')));
+
   router.post('/api/inventory/adjust', (ctx) => {
     const caller = requireCaller(ctx);
     repo.assertPermission(caller, 'inventory.adjust');

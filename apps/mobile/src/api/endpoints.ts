@@ -446,15 +446,18 @@ export interface RangeQuery {
   readonly to?: IsoDate;
 }
 
+/** Spread into a fresh object so the index-signature query type accepts it. */
+const rangeQuery = (range: RangeQuery): Record<string, string | undefined> => ({ from: range.from, to: range.to });
+
 export const dashboardReport = (range: RangeQuery = {}): Promise<DashboardReport> =>
-  get<DashboardReport>('/api/reports/dashboard', { query: range });
+  get<DashboardReport>('/api/reports/dashboard', { query: rangeQuery(range) });
 export const profitAndLoss = (range: RangeQuery = {}): Promise<ProfitAndLossReport> =>
-  get<ProfitAndLossReport>('/api/reports/profit-loss', { query: range });
+  get<ProfitAndLossReport>('/api/reports/profit-loss', { query: rangeQuery(range) });
 export const balanceSheet = (asOf?: IsoDate): Promise<BalanceSheetReport> =>
   get<BalanceSheetReport>('/api/reports/balance-sheet', { query: { asOf } });
 export const trialBalance = (range: RangeQuery = {}): Promise<Record<string, unknown>> =>
-  get<Record<string, unknown>>('/api/reports/trial-balance', { query: range });
-export const cashFlow = (range: RangeQuery = {}): Promise<CashFlowReport> => get<CashFlowReport>('/api/reports/cash-flow', { query: range });
+  get<Record<string, unknown>>('/api/reports/trial-balance', { query: rangeQuery(range) });
+export const cashFlow = (range: RangeQuery = {}): Promise<CashFlowReport> => get<CashFlowReport>('/api/reports/cash-flow', { query: rangeQuery(range) });
 export const receivables = (): Promise<ReceivableRow[]> => get<ReceivableRow[]>('/api/reports/receivables');
 export const payables = (): Promise<PayableRow[]> => get<PayableRow[]>('/api/reports/payables');
 export const backupDump = (): Promise<BackupDump> => get<BackupDump>('/api/reports/backup');

@@ -157,6 +157,15 @@ describe('privileged paths', () => {
     expect(statement).toMatch(/sha256\(/i);
   });
 
+  it('lets a valid redemption set the role without tripping the role guard', () => {
+    const redeem = allFunctions.find((fn) => fn.name === 'redeem_invite') as { statement: string };
+    const guard = allFunctions.find((fn) => fn.name === 'guard_member_role_change') as { statement: string };
+    expect(redeem.statement).toMatch(/set_config\('app\.membership_change'/);
+    expect(guard.statement).toMatch(/current_setting\('app\.membership_change'/);
+    expect(redeem.statement).toMatch(/'invite_redemption'/);
+    expect(guard.statement).toMatch(/'invite_redemption'/);
+  });
+
   it('protects the last owner with a guard trigger', () => {
     const guard = allFunctions.find((fn) => fn.name === 'protect_last_owner');
     expect(guard, 'app.protect_last_owner is missing').toBeDefined();

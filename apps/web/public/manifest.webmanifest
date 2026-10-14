@@ -1,0 +1,33 @@
+{
+  "name": "Small Business Manager",
+  "short_name": "SBM",
+  "description": "Offline-first business and farming workspace for 2-5 partners (Bangla + English).",
+  "lang": "bn",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f6f7f9",
+  "theme_color": "#0f766e",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Sales", "url": "/#/sales" },
+    { "name": "Inventory", "url": "/#/inventory" },
+    { "name": "Sync status", "url": "/#/sync" }
+  ]
+}

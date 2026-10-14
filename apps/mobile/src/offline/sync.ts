@@ -1,6 +1,7 @@
 import { SYNC_STATUS_LABEL, syncBanner, type SyncStatus } from '@sbm/domain';
 
-import { isOfflineError, pushEvents, pullChanges } from '../api/client';
+import { isOfflineError } from '../api/client';
+import { pullChanges, pushEvents } from '../api/endpoints';
 import type { ConflictRow, PullResponse, PushResponse } from '../api/types';
 import { SYNC_BATCH_SIZE } from '../config/env';
 import { META_KEYS, all, getMeta, run, setMetaWithin, withTransaction, type Tx } from './db';
@@ -30,17 +31,18 @@ import {
  */
 
 export interface SyncSummary {
-  readonly pushed: number;
-  readonly synced: number;
-  readonly conflicts: number;
-  readonly rejected: number;
-  readonly needsAttention: number;
-  readonly pulled: number;
-  readonly conflictsOpen: number;
-  readonly pending: number;
-  readonly lastSyncedAt: string | null;
-  readonly error: string | null;
-  readonly offline: boolean;
+  /** Counts are mutable on purpose: one pass accumulates push/pull tallies. */
+  pushed: number;
+  synced: number;
+  conflicts: number;
+  rejected: number;
+  needsAttention: number;
+  pulled: number;
+  conflictsOpen: number;
+  pending: number;
+  lastSyncedAt: string | null;
+  error: string | null;
+  offline: boolean;
 }
 
 const PULLED_TABLES: readonly { readonly key: keyof PullResponse; readonly table: string; readonly columns: readonly string[] }[] = [

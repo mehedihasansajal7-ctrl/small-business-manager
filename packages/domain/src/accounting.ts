@@ -37,6 +37,7 @@ export const STANDARD_ACCOUNTS: readonly Account[] = Object.freeze([
   { code: '2200', name: 'Tax Payable', nameBn: 'কর প্রদেয়', type: 'LIABILITY', normal: 'CREDIT' },
   { code: '2300', name: 'Accrued Expenses', nameBn: 'সঞ্চিত খরচ', type: 'LIABILITY', normal: 'CREDIT' },
   { code: '3000', name: 'Owner Capital', nameBn: 'মালিকের পুঁজি', type: 'EQUITY', normal: 'CREDIT' },
+  { code: '3050', name: 'Opening Balance Equity', nameBn: 'প্রারম্ভিক জের', type: 'EQUITY', normal: 'CREDIT' },
   { code: '3100', name: 'Partner Contributions', nameBn: 'অংশীদারদের পুঁজি', type: 'EQUITY', normal: 'CREDIT' },
   { code: '3200', name: 'Retained Earnings', nameBn: 'সঞ্চিত মুনাফা', type: 'EQUITY', normal: 'CREDIT' },
   { code: '3300', name: 'Partner Drawings', nameBn: 'অংশীদারদের উত্তোলন', type: 'EQUITY', normal: 'DEBIT', contra: true },
@@ -414,6 +415,49 @@ export function buildPartnerCapitalPosting(input: {
     ...entry,
     lines: entry.lines.map((l) => ({ ...l, partnerId: input.partnerId })),
   };
+}
+
+/**
+ * Opening balance for an asset (cash, bank, mobile wallet or inventory) when a
+ * business is first set up or migrated in.
+ *
+ * The balancing leg is Opening Balance Equity (3050) - deliberately EQUITY, not
+ * revenue: bringing your own cash or stock onto the books must never show up as
+ * profit.
+ */
+export function buildOpeningBalancePosting(input: {
+  businessId: string;
+  date: string;
+  reference: string;
+  currency: string;
+  assetAccount?: string;
+  amount: Money;
+  postedBy: string;
+  description?: string;
+  eventId?: string;
+}): JournalEntry {
+  const assetAccount = input.assetAccount ?? '1000';
+  const lines: JournalLine[] =
+    input.amount.amount.isPositive()
+      ? [
+          journalLine(assetAccount, input.amount, 'debit', 'Opening balance'),
+          journalLine('3050', input.amount, 'credit', 'Opening balance equity'),
+        ]
+      : [
+          journalLine('3050', negMoney(input.amount), 'debit', 'Opening balance equity'),
+          journalLine(assetAccount, negMoney(input.amount), 'credit', 'Opening balance'),
+        ];
+  return simpleEntry(
+    input.businessId,
+    input.date,
+    input.reference,
+    input.currency,
+    input.postedBy,
+    'OPENING_BALANCE',
+    input.description ?? 'Opening balance',
+    lines,
+    input.eventId,
+  );
 }
 
 /** Stock write-off / shrinkage / mortality. */

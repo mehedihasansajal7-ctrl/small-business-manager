@@ -200,6 +200,7 @@ export const SCREEN_MESSAGES = {
   'farm.costBreakdown': { en: 'Cost breakdown', bn: 'ব্যয়ের বিশ্লেষণ' },
   'farm.assignedToStock': { en: 'Assigned to finished stock', bn: 'সমাপ্ত মজুদের সাথে যুক্ত' },
   'farm.remainingInBatch': { en: 'Remaining in batch', bn: 'ব্যাচে অবশিষ্ট' },
+  'farm.costRemaining': { en: 'Cost remaining in batch', bn: 'ব্যাচে অবশিষ্ট ব্যয়' },
   'farm.costInUnsoldOutput': { en: 'Cost in unsold output', bn: 'অবিক্রীত উৎপাদনে ব্যয়' },
   'farm.events': { en: 'Cycle events', bn: 'সাইকেল ইভেন্ট' },
   'farm.addEvent': { en: 'Record event', bn: 'ইভেন্ট লিখুন' },

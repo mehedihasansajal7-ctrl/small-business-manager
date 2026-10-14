@@ -7,7 +7,8 @@
   "workspaces": [
     "packages/*",
     "apps/api",
-    "apps/web"
+    "apps/web",
+    "supabase"
   ],
   "engines": {
     "node": ">=22.5.0"

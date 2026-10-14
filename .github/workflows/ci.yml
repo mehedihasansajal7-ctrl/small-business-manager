@@ -1,0 +1,70 @@
+name: CI
+
+# Verification that costs nothing beyond GitHub's own free Actions allowance.
+# (Private repos get a monthly minute allowance on the free plan; public repos are
+# unlimited. If you exhaust it, everything here also runs locally - see TESTING.md.)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Type-check, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node 24
+        uses: actions/setup-node@v4
+        with:
+          # The API uses the built-in `node:sqlite`, which needs Node >= 22.5.
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the shared domain package
+        run: npm run build:domain
+
+      - name: Type-check every workspace
+        run: npm run typecheck
+
+      - name: Domain rules (money, units, inventory, accounting, farming, sync)
+        run: npm run test -w @sbm/domain
+
+      - name: API integration + security + HTTP suites
+        run: npm run test -w @sbm/api
+
+      - name: Postgres schema, RLS policies and functions (static validation)
+        run: npm run test -w @sbm/supabase
+
+      - name: Web app unit tests
+        run: npx vitest run --passWithNoTests
+        working-directory: apps/web
+
+      - name: Build the web app (PWA static bundle)
+        run: npm run build -w @sbm/web
+
+      - name: Report the produced bundle
+        run: ls -la apps/web/dist || true
+
+  # The Android app is intentionally NOT built here: an APK needs a JDK plus the
+  # Android SDK, which is a heavy toolchain. `apps/mobile/README.md` documents the
+  # exact local commands. This job stays honest rather than pretending otherwise.
+  android-source-check:
+    name: Android source sanity (no APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm the Expo project files are present
+        run: |
+          test -f apps/mobile/package.json
+          test -f apps/mobile/app.json
+          test -f apps/mobile/App.tsx
+          echo "Android source present. APK build requires a JDK + Android SDK (see apps/mobile/README.md)."

@@ -299,6 +299,10 @@ begin
       using errcode = 'invalid_parameter_value';
   end if;
 
+  -- Tell the role-change guard that this membership write comes from a valid
+  -- redemption (transaction-local; see app.guard_member_role_change).
+  perform set_config('app.membership_change', 'invite_redemption', true);
+
   select * into v_existing
     from public.business_members m
    where m.business_id = v_invite.business_id and m.user_id = v_uid;
@@ -430,6 +434,14 @@ begin
   if new.role is distinct from old.role then
     -- NULL profile id == trusted server-side/seed context (no JWT); see 0001.
     if public.current_profile_id() is null then
+      return new;
+    end if;
+
+    -- A redemption legitimately sets the role the invite grants. The marker is
+    -- transaction-local and can only be set by public.redeem_invite() (it is a
+    -- SECURITY DEFINER function; PostgREST exposes no way for a client to set
+    -- an `app.*` setting directly).
+    if coalesce(current_setting('app.membership_change', true), '') = 'invite_redemption' then
       return new;
     end if;
 
@@ -1290,6 +1302,7 @@ create index if not exists idx_unit_conversions_business on public.unit_conversi
 create index if not exists idx_customers_business on public.customers (business_id, is_active);
 create index if not exists idx_suppliers_business on public.suppliers (business_id, is_active);
 create index if not exists idx_lots_item on public.stock_lots (business_id, item_id);
+create index if not exists idx_stock_lots_item_lot on public.stock_lots (business_id, item_id, lot_no);
 create index if not exists idx_stock_item on public.stock_movements (business_id, item_id, occurred_at);
 create index if not exists idx_stock_source on public.stock_movements (business_id, source_type, source_id);
 

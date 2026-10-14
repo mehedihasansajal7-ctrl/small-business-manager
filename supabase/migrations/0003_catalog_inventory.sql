@@ -193,8 +193,9 @@ create table if not exists public.stock_lots (
   expiry_date date,
   created_at  timestamptz not null default now(),
   constraint stock_lots_unit_cost_non_negative check (unit_cost >= 0),
-  constraint stock_lots_currency_shape check (char_length(currency) between 3 and 8),
-  constraint stock_lots_item_lot_unique unique (business_id, item_id, lot_no)
+  constraint stock_lots_currency_shape check (char_length(currency) between 3 and 8)
+  -- No unique on lot_no: the same lot name may legitimately arrive twice.
+  -- Lookup is served by idx_stock_lots_item_lot (0007).
 );
 
 -- -----------------------------------------------------------------------------

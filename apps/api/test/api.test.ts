@@ -869,6 +869,80 @@ describe('backup restore and attachment download', () => {
   });
 });
 
+describe('stock transfers and opening balances', () => {
+  it('moves stock between locations without changing quantity, value or profit', async () => {
+    const w = await setupBusiness('transfer@test.sbm');
+    const second = await w.client.post<{ id: string }>('/api/locations', { name: 'Second store', kind: 'STORE' });
+    await w.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: w.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+
+    const locations = await w.client.get<{ id: string; name: string }[]>('/api/locations');
+    const main = locations.body.find((l) => l.name === 'Main Store');
+    const transfer = await w.client.post<{ from: string; to: string; unitCost: string; note: string }>('/api/inventory/transfer', {
+      itemId: w.productId,
+      fromLocationId: main?.id,
+      toLocationId: second.body.id,
+      quantity: '40',
+      reason: 'Moved to the second counter',
+    });
+    expect(transfer.status).toBe(200);
+    expect(transfer.body.from).toBe('60');
+    expect(transfer.body.to).toBe('40');
+    expect(transfer.body.unitCost).toBe('58.00');
+    expect(transfer.body.note).toMatch(/not an expense/i);
+
+    // Total quantity and value are unchanged, and nothing hit the P&L.
+    const valuation = await w.client.get<{ totalValue: string; rows: { itemId: string; quantity: string }[] }>('/api/reports/stock-valuation');
+    expect(valuation.body.totalValue).toBe('5800.00');
+    expect(valuation.body.rows.find((row) => row.itemId === w.productId)?.quantity).toBe('100');
+    const pnl = await w.client.get<{ netProfit: string }>('/api/reports/profit-loss?from=2026-04-01&to=2026-04-30');
+    expect(pnl.body.netProfit).toBe('0.00');
+
+    // Over-transferring from one location is still refused.
+    const tooMuch = await w.client.post('/api/inventory/transfer', { itemId: w.productId, fromLocationId: main?.id, toLocationId: second.body.id, quantity: '999', reason: 'too much' });
+    expect(tooMuch.status).toBe(409);
+
+    // Transferring to the same location is a validation error.
+    expect((await w.client.post('/api/inventory/transfer', { itemId: w.productId, fromLocationId: main?.id, toLocationId: main?.id, quantity: '1', reason: 'nope' })).status).toBe(400);
+  });
+
+  it('records opening cash and opening stock as equity, never as profit', async () => {
+    const w = await setupBusiness('opening@test.sbm');
+    const cash = await w.client.post<{ note: string }>('/api/finance/opening-balance', { accountCode: '1010', amount: '50000', date: '2026-04-01', note: 'Bank balance brought in' });
+    expect(cash.status).toBe(200);
+    expect(cash.body.note).toMatch(/equity, not revenue/i);
+
+    const stock = await w.client.post<{ value: string; note: string }>('/api/inventory/opening', { itemId: w.productId, quantity: '100', unit: 'kg', unitCost: '58', date: '2026-04-01' });
+    expect(stock.status).toBe(200);
+    expect(stock.body.value).toBe('5800.00');
+
+    // Equity, not income: the P&L stays empty and the balance sheet balances.
+    const pnl = await w.client.get<{ netRevenue: string; netProfit: string }>('/api/reports/profit-loss?from=2026-04-01&to=2026-04-30');
+    expect(pnl.body.netRevenue).toBe('0.00');
+    expect(pnl.body.netProfit).toBe('0.00');
+
+    const sheet = await w.client.get<{ totalAssets: string; totalEquity: string; balanced: boolean }>('/api/reports/balance-sheet?asOf=2026-04-30');
+    expect(sheet.body.totalAssets).toBe('55800.00');
+    expect(sheet.body.totalEquity).toBe('55800.00');
+    expect(sheet.body.balanced).toBe(true);
+
+    const trial = await w.client.get<{ balanced: boolean }>('/api/reports/trial-balance?from=2026-04-01&to=2026-04-30');
+    expect(trial.body.balanced).toBe(true);
+
+    const cashFlow = await w.client.get<{ closing: string }>('/api/reports/cash-flow?from=2026-04-01&to=2026-04-30');
+    expect(cashFlow.body.closing).toBe('50000.00');
+
+    // Opening balances are audited and permission-gated.
+    const audit = await w.client.get<{ action: string }[]>('/api/audit');
+    expect(audit.body.filter((row) => row.action === 'opening_balance.set')).toHaveLength(2);
+
+    const invite = await w.client.post<{ code: string }>('/api/members/invites', { role: 'viewer', email: 'opening.viewer@test.sbm' });
+    const viewer = client();
+    await viewer.post('/api/auth/register', { email: 'opening.viewer@test.sbm', password: 'password123', displayName: 'Viewer' });
+    await viewer.post('/api/invites/accept', { code: invite.body.code });
+    expect((await viewer.post('/api/finance/opening-balance', { accountCode: '1000', amount: '1', date: '2026-04-02' })).status).toBe(403);
+  });
+});
+
 describe('validation and limits', () => {
   it('rejects malformed input instead of storing it', async () => {
     const w = await setupBusiness('valid@test.sbm');

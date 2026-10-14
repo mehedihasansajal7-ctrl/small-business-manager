@@ -1,6 +1,12 @@
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 /**
+ * `app.config.ts` runs in Node (not on the device), so `process.env` is real here.
+ * Declared module-scoped to type-check without pulling in `@types/node`.
+ */
+declare const process: { env: Record<string, string | undefined> };
+
+/**
  * Dynamic Expo config.
  *
  * `app.json` holds the static manifest (name, scheme, android package, version

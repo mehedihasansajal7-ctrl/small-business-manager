@@ -105,6 +105,7 @@ export const CORE_MESSAGES = {
   'sync.resolveLocal': { en: 'Keep mine', bn: 'আমারটি রাখুন' },
   'sync.resolveServer': { en: 'Keep server version', bn: 'সার্ভারেরটি রাখুন' },
   'sync.event': { en: 'Event', bn: 'ইভেন্ট' },
+  'sync.risk': { en: 'Risk', bn: 'ঝুঁকি' },
   'sync.attempts': { en: 'Attempts', bn: 'চেষ্টা' },
   'sync.lastError': { en: 'Last error', bn: 'সর্বশেষ ত্রুটি' },
   'sync.localProposal': { en: 'Local proposal — not shared yet', bn: 'স্থানীয় প্রস্তাব — এখনো শেয়ার হয়নি' },

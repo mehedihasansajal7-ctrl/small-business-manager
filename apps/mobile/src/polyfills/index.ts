@@ -19,10 +19,7 @@ import { getRandomBytes, randomUUID } from 'expo-crypto';
 
 type MutableGlobal = typeof globalThis & {
   TextEncoder?: unknown;
-  crypto?: {
-    randomUUID?: () => string;
-    getRandomValues?: <T extends ArrayBufferView | null>(array: T) => T;
-  };
+  crypto?: unknown;
 };
 
 const globals = globalThis as MutableGlobal;
@@ -74,23 +71,31 @@ class Utf8TextEncoder {
 }
 
 if (typeof globals.TextEncoder === 'undefined') {
-  globals.TextEncoder = Utf8TextEncoder;
+  // Cast through `unknown`: our minimal encoder intentionally does not implement
+  // every TextEncoder overload (e.g. `encodeInto` semantics differ slightly), and
+  // the only consumer is `@sbm/domain`'s SHA-256, which uses `encode()` alone.
+  globals.TextEncoder = Utf8TextEncoder as unknown as typeof TextEncoder;
 }
 
 // ---------------------------------------------------------------------------
 // crypto.getRandomValues / crypto.randomUUID
 // ---------------------------------------------------------------------------
 
-const cryptoObject = globals.crypto ?? {};
-globals.crypto = cryptoObject;
+type CryptoLike = {
+  randomUUID?: () => string;
+  getRandomValues?: <T extends ArrayBufferView | null>(array: T) => T;
+};
+
+const cryptoObject: CryptoLike = (globals.crypto as CryptoLike | undefined) ?? {};
+(globals as { crypto?: CryptoLike }).crypto = cryptoObject;
 
 if (typeof cryptoObject.getRandomValues !== 'function') {
   cryptoObject.getRandomValues = <T extends ArrayBufferView | null>(array: T): T => {
     if (!array) return array;
-    const view = array as unknown as { byteLength: number; length?: number };
-    const buffer = new Uint8Array(getRandomBytes(view.byteLength));
-    // Copy into the caller's view (Uint8Array / Int32Array / DataView…).
-    new Uint8Array((array as unknown as ArrayBufferView).buffer).set(buffer);
+    const view = array as ArrayBufferView;
+    // Respect byteOffset/length: the caller may hand us a subarray view, and
+    // filling from offset 0 of the underlying buffer would corrupt neighbouring bytes.
+    new Uint8Array(view.buffer, view.byteOffset, view.byteLength).set(getRandomBytes(view.byteLength));
     return array;
   };
 }
@@ -105,7 +110,8 @@ if (typeof cryptoObject.randomUUID !== 'function') {
       const bytes = getRandomBytes(16);
       bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
       bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
-      const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      let hex = '';
+      for (let i = 0; i < bytes.length; i += 1) hex += (bytes[i] ?? 0).toString(16).padStart(2, '0');
       return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     }
   };

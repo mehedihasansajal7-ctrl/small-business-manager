@@ -13,6 +13,7 @@ import {
   buildIncomeExpensePosting,
   buildInputIssuePosting,
   buildInventoryLossPosting,
+  buildOpeningBalancePosting,
   buildPartnerCapitalPosting,
   buildPurchasePosting,
   buildReversal,
@@ -1658,6 +1659,161 @@ export class Repository {
         totalRows: Object.values(inserted).reduce((a, b) => a + b, 0),
         note: 'Documents were re-keyed with new ids and every reference was remapped. Members, users and the audit log were NOT restored: re-invite your partners and check Reports after the import.',
       };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Stock transfers between locations and opening balances
+  // -------------------------------------------------------------------------
+
+  /**
+   * Move stock between two locations. Both legs are written in ONE transaction at
+   * the same cost, so the total quantity and value are unchanged - a transfer is
+   * a movement, never a gain or a loss.
+   */
+  transferStock(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'inventory.manage');
+    const body = asRecord(input, 'transfer');
+    const itemId = requireString(body.itemId, 'itemId', { maxLength: 64 });
+    const fromLocationId = requireString(body.fromLocationId, 'fromLocationId', { maxLength: 64 });
+    const toLocationId = requireString(body.toLocationId, 'toLocationId', { maxLength: 64 });
+    if (fromLocationId === toLocationId) throw HttpError.badRequest('VALIDATION', 'Source and destination locations must differ');
+    const product = this.assertBusinessValue(this.db.get<ProductRow>('SELECT * FROM products WHERE id = ? AND business_id = ?', [itemId, caller.business.id]), 'Product');
+    this.assertBusinessValue(this.db.get('SELECT id FROM locations WHERE id = ? AND business_id = ?', [fromLocationId, caller.business.id]), 'Source location');
+    this.assertBusinessValue(this.db.get('SELECT id FROM locations WHERE id = ? AND business_id = ?', [toLocationId, caller.business.id]), 'Destination location');
+    const quantity = dec(String(body.quantity ?? '0'));
+    if (!quantity.isPositive()) throw HttpError.badRequest('VALIDATION', 'Transfer quantity must be greater than zero');
+    const unit = optionalString(body.unit, 'unit', 24) ?? product.unit;
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const occurredAt = optionalString(body.occurredAt, 'occurredAt', 10) ?? new Date().toISOString().slice(0, 10);
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'stock_transfer', 'TRN', occurredAt);
+    const reason = optionalString(body.reason, 'reason', 400);
+
+    return this.db.transaction(() => {
+      const unitCost = this.itemUnitCost(caller.business.id, itemId, currency);
+      // Out of the source location first: this is where negative stock is caught.
+      this.recordMovement(caller, {
+        itemId,
+        locationId: fromLocationId,
+        direction: 'OUT',
+        quantity,
+        unit,
+        unitCost,
+        sourceType: 'TRANSFER_OUT',
+        sourceId: reference,
+        reason,
+        occurredAt,
+      });
+      this.recordMovement(caller, {
+        itemId,
+        locationId: toLocationId,
+        direction: 'IN',
+        quantity,
+        unit,
+        unitCost,
+        sourceType: 'TRANSFER_IN',
+        sourceId: reference,
+        reason,
+        occurredAt,
+      });
+      this.audit({
+        businessId: caller.business.id,
+        actorId: caller.user.id,
+        action: 'inventory.transfer',
+        entityType: 'stock_transfer',
+        entityId: reference,
+        detail: { itemId, fromLocationId, toLocationId, quantity: quantity.toString(), unitCost: unitCost.amount.toString() },
+      });
+      return {
+        reference,
+        itemId,
+        quantity: quantity.toString(),
+        unit,
+        unitCost: unitCost.amount.toString(),
+        currency,
+        from: this.stockBalance(caller.business.id, itemId, fromLocationId).quantity.toString(),
+        to: this.stockBalance(caller.business.id, itemId, toLocationId).quantity.toString(),
+        note: 'A transfer does not change total quantity or inventory value, and is not an expense.',
+      };
+    });
+  }
+
+  /** Bring an opening CASH / BANK / MFS balance onto the books (audited). */
+  recordOpeningBalance(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'finance.opening_balance');
+    const body = asRecord(input, 'opening balance');
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const amount = money(currency, String(body.amount ?? '0'));
+    if (amount.amount.isZero()) throw HttpError.badRequest('VALIDATION', 'Opening balance must not be zero');
+    const accountCode = requireEnum(body.accountCode ?? '1000', 'accountCode', ['1000', '1010', '1020'] as const);
+    const date = requireString(body.date, 'date', { maxLength: 10 });
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'opening', 'OB', date);
+    const eventId = randomUUID();
+    return this.db.transaction(() => {
+      this.postJournal(
+        caller,
+        buildOpeningBalancePosting({
+          businessId: caller.business.id,
+          date,
+          reference,
+          currency,
+          assetAccount: accountCode,
+          amount,
+          postedBy: caller.user.id,
+          description: optionalString(body.note, 'note', 200) ?? 'Opening balance',
+          eventId: `${eventId}:journal`,
+        }),
+      );
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'opening_balance.set', entityType: 'business', entityId: caller.business.id, detail: { accountCode, amount: amount.amount.toString() } });
+      return { reference, accountCode, amount: amount.amount.toString(), currency, note: 'Recorded as equity, not revenue.' };
+    });
+  }
+
+  /** Bring opening STOCK onto the books: a ledger movement plus the matching entry. */
+  recordOpeningStock(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, 'finance.opening_balance');
+    const body = asRecord(input, 'opening stock');
+    const itemId = requireString(body.itemId, 'itemId', { maxLength: 64 });
+    const product = this.assertBusinessValue(this.db.get<ProductRow>('SELECT * FROM products WHERE id = ? AND business_id = ?', [itemId, caller.business.id]), 'Product');
+    const quantity = dec(String(body.quantity ?? '0'));
+    if (!quantity.isPositive()) throw HttpError.badRequest('VALIDATION', 'Opening quantity must be greater than zero');
+    const unit = optionalString(body.unit, 'unit', 24) ?? product.unit;
+    const currency = String(body.currency ?? caller.business.currency).toUpperCase();
+    const unitCost = money(currency, String(body.unitCost ?? '0'));
+    if (!unitCost.amount.isPositive()) throw HttpError.badRequest('VALIDATION', 'unitCost must be greater than zero');
+    const date = requireString(body.date, 'date', { maxLength: 10 });
+    const reference = optionalString(body.reference, 'reference', 40) ?? nextReference(this.db, caller.business.id, 'opening', 'OB', date);
+    const eventId = randomUUID();
+    const value = mulMoney(unitCost, quantity);
+
+    return this.db.transaction(() => {
+      this.recordMovement(caller, {
+        itemId,
+        locationId: optionalString(body.locationId, 'locationId', 64) ?? undefined,
+        direction: 'IN',
+        quantity,
+        unit,
+        unitCost,
+        sourceType: 'OPENING',
+        sourceId: reference,
+        occurredAt: date,
+      });
+      this.postJournal(
+        caller,
+        buildOpeningBalancePosting({
+          businessId: caller.business.id,
+          date,
+          reference,
+          currency,
+          assetAccount: '1200',
+          amount: value,
+          postedBy: caller.user.id,
+          description: `Opening stock: ${product.name}`,
+          eventId: `${eventId}:journal`,
+        }),
+      );
+      this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: 'opening_balance.set', entityType: 'product', entityId: itemId, detail: { quantity: quantity.toString(), unitCost: unitCost.amount.toString(), value: value.amount.toString() } });
+      return { reference, itemId, quantity: quantity.toString(), unit, unitCost: unitCost.amount.toString(), value: value.amount.toString(), currency, note: 'Opening stock is equity, not profit.' };
     });
   }
 

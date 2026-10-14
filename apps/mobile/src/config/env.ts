@@ -1,6 +1,14 @@
 import Constants from 'expo-constants';
 
 /**
+ * `process.env.EXPO_PUBLIC_*` is replaced with a string literal by Metro at bundle
+ * time — but only if the reference is written exactly like that. The declaration
+ * below is module-scoped so this file type-checks without `@types/node` (React
+ * Native does not ship Node globals), while the literal form is preserved.
+ */
+declare const process: { env: Record<string, string | undefined> };
+
+/**
  * Single source of truth for build-time configuration.
  *
  * The API base URL is resolved in this order:
