@@ -85,10 +85,12 @@ npm install
 #    PORT=8787 npm run api        # http://127.0.0.1:8787
 
 # 4. Run the app.
+npx expo install --check      # confirms every dependency matches Expo SDK 52
 npm run start                  # Metro + a QR code (Expo Go, Route B)
 npm run android                # Metro + launch on an emulator/device (Route A)
 npm run web                    # a quick browser sanity check
 npm run typecheck              # tsc --noEmit
+npm run lint                   # eslint . --ext .ts,.tsx
 ```
 
 ### Pointing the app at your API
@@ -228,39 +230,57 @@ sideloadable internal builds.
 
 ---
 
-## 6. Not built in this environment — please read
+## 6. What was verified here — and what was not
 
-This source tree was written and reviewed on a Windows machine with **Node 24 and no JDK, no
-Android SDK and no Android Studio**. Therefore:
+This source tree was written on a Windows machine with **Node 24 and no JDK, no Android SDK and no
+Android Studio**. The Android build path is therefore the one thing that could not be exercised.
 
-* **No APK was produced here**, and `expo prebuild` was not run — there is no `android/` directory
-  in this repository by design (it is generated, and `.gitignore` excludes it).
-* The mobile app was **not type-checked with the real React Native types** in that environment.
-  What *was* run is a parse/scope check with the TypeScript compiler from the monorepo root
-  (`tsc --noEmit` over all of `apps/mobile`), which caught and fixed real defects (a wrong import
-  path in the sync engine, a readonly-vs-mutable interface mismatch, and an invalid query type).
-  It does **not** substitute for a full `npm run typecheck` with `react`, `react-native` and the
-  Expo module types installed.
-* Nothing here was executed on a device or emulator.
+### Verified in this environment (real commands, real output)
+
+| Check | Command | Result |
+|---|---|---|
+| Dependencies install | `npm install` in `apps/mobile` | ✅ **914 packages**, plus the ESLint set and the `@expo/metro-runtime` / `expo-asset` follow-ups |
+| SDK version alignment | `npx expo install --check` | ✅ `Dependencies are up to date` (after pinning `expo-asset`, `expo-sqlite` and `react-native` to their SDK 52 versions) |
+| Expo config resolves | `npx expo config --type public` | ✅ `app.json` + `app.config.ts` load together; `android.package = com.sbm.businessmanager`, `versionCode = 1`, `extra.apiUrl = http://10.0.2.2:8787` |
+| Permissions | `npx expo config` | ✅ `INTERNET`, `CAMERA`, `ACCESS_NETWORK_STATE` only; location/contacts/audio are in `blockedPermissions` (note: `expo-image-picker` *adds* `RECORD_AUDIO`, which the block list then strips) |
+| Type check | `npx tsc -p tsconfig.json --noEmit` | ✅ **0 errors**, against the real React, React Native, Expo module and `@sbm/domain` types |
+| Lint | `npx eslint . --ext .ts,.tsx` | ✅ **0 errors, 0 warnings** |
+| Full app bundle | `npx expo export --platform web` | ✅ **946 modules** bundled by Metro (1.96 MB) — every screen, the offline layer and `@sbm/domain` compile, so all imports and transforms resolve |
+
+Those runs caught and fixed real defects while the app was being written: a wrong import path in the
+sync engine, a mutable-vs-readonly interface mismatch, an invalid query type, a **missing `Text`
+import that would have crashed a screen at runtime**, a missing `cycleId` argument, a `stock.adjust`
+outbox event the server would have rejected, and two missing translation keys.
+
+### NOT verified here
+
+* **No APK, and no `expo prebuild`** — there is no `android/` directory in this repository, by design
+  (it is generated and git-ignored). Nothing above proves the *native* Android build works.
+* **Nothing ran on a device or emulator**, so runtime behaviour (SQLite on a real device, the camera,
+  the keystore, gesture handling, dark mode) is unproven.
+* The bundle check used the **web** platform. It proves the shared JS graph compiles; it does not
+  prove that Android-specific native modules link.
 
 So the first thing to do on a machine with the toolchain is:
 
 ```bash
 cd apps/mobile
 npm install
-npm run typecheck      # expect to fix a few type-level nits, see below
-npm run android        # or: npx expo run:android --variant debug
+npx expo install --check     # expect "up to date"; use `npx expo install --fix` otherwise
+npm run typecheck            # expected: clean
+npx expo prebuild --platform android
+npx expo run:android --variant debug
 ```
 
-Likely first-pass items, so they do not surprise you:
+Known environment notes, so they do not surprise you:
 
-* Dependency versions are pinned to the **Expo SDK 52** generation. Refresh with
-  `npx expo install --check` and let it rewrite `package.json`.
-* `@react-navigation/drawer` needs `react-native-reanimated` + `react-native-gesture-handler`
-  (both are declared) and their Babel/Gradle setup, which `expo prebuild` handles.
-* `@sbm/domain` is consumed as a compiled `file:` dependency. If `npm install` resolves it before
-  the domain package is built, run `npm run build -w @sbm/domain` and re-run `npm install` in
-  `apps/mobile` (or `Metro` will report that `packages/domain/dist/index.js` is missing).
+* `@sbm/domain` is consumed as a compiled `file:` dependency. If it is resolved before the domain
+  package is built, run `npm run build -w @sbm/domain` from the monorepo root and re-run
+  `npm install` here — otherwise Metro reports that `packages/domain/dist/index.js` is missing.
+* `@react-navigation/drawer` needs `react-native-reanimated` + `react-native-gesture-handler` (both
+  declared) and their Babel/Gradle setup, which `expo prebuild` generates.
+* `app.config.ts` is a TypeScript dynamic config, which is why `ts-node` is a devDependency — that is
+  Expo's documented requirement, not an accident.
 
 ---
 
@@ -276,6 +296,7 @@ apps/mobile/
 ├── metro.config.js             monorepo watchFolders + @sbm/domain resolution
 ├── eas.json                    development / preview / local / production profiles
 ├── tsconfig.json               strict, paths → packages/domain/dist
+├── .eslintrc.js                eslint-config-expo baseline (+ the two documented tweaks)
 ├── assets/                     generated placeholder icons (scripts/generate-assets.mjs)
 ├── scripts/generate-assets.mjs dependency-free PNG writer for the placeholder icons
 └── src/
@@ -311,6 +332,14 @@ apps/mobile/
   mirrored journal with the same `@sbm/domain` functions the server uses.
 * **Farms and farm units are online-only** (there is no `farm.create` / `farm_unit.create` outbox
   event type), while cycles, operations and harvests are offline-capable. The buttons say so.
+* **Stock adjustment is online-only too**, for the same reason: `SyncService.applyEvent` has no
+  `stock.adjust` case, so `StockAdjustScreen` calls `POST /api/inventory/adjust` directly and disables
+  the button offline. See the comment where the queueing helper used to be in
+  `src/offline/repository.ts`.
+* **AI output is never a transaction.** The AI screen has no "apply" action; a record can only be
+  created through the outbox flow with an explicit save. The `generative` / `local` / `fallback` mode
+  is rendered on every answer by `AIModeBadge`, and citations show their `kind` with an "open source"
+  link.
 * **App config.** `app.config.ts` takes precedence over `app.json` and reads `app.json` through the
   `config` argument, so nothing is duplicated.
 
@@ -340,11 +369,27 @@ Manager** অ্যান্ড্রয়েড অ্যাপ। এতে �
 আপলোড ব্যর্থ হলেও বিক্রয় বা লেনদেন বাতিল/দুইবার হয় না। অ্যাপে লেখা থাকে: *"ছবিগুলো আপনার
 সার্ভারে সংরক্ষিত হয়, সিঙ্ক হওয়ার পর অংশীদাররা দেখতে পাবেন।"*
 
-**বিল্ড সম্পর্কে সৎ কথা:** যে মেশিনে এই কোড লেখা হয়েছে সেখানে **JDK, Android SDK বা Android
-Studio নেই**, তাই এখানে **APK তৈরি করা হয়নি** এবং `expo prebuild` চালানো হয়নি। এছাড়া React
-Native-এর আসল টাইপ দিয়ে `npm run typecheck` চালানো সম্ভব হয়নি — শুধু monorepo-র TypeScript
-কম্পাইলার দিয়ে কোড পার্স/স্কোপ যাচাই করা হয়েছে (এতে কয়েকটি বাস্তব ভুল ধরা পড়েছে ও ঠিক করা
-হয়েছে)।
+**বিল্ড সম্পর্কে সৎ কথা:** এই কোড যে মেশিনে লেখা হয়েছে সেখানে **JDK, Android SDK বা Android Studio
+নেই** — তাই এখানে **APK তৈরি করা হয়নি** এবং `expo prebuild` চালানো হয়নি (তাই `android/` ফোল্ডার
+রিপোতে নেই, এটি জেনারেট হয়ে থাকে)।
+
+তবে যেগুলো সত্যিই চালানো ও যাচাই করা হয়েছে:
+
+- `npm install` — সফল (৯১৪+ প্যাকেজ)
+- `npx expo install --check` — “Dependencies are up to date” (SDK 52-এর সঠিক ভার্সনে পিন করা)
+- `npx expo config` — `app.json` + `app.config.ts` ঠিকভাবে লোড হয়; permissions যাচাই করা
+  (INTERNET, CAMERA, ACCESS_NETWORK_STATE; লোকেশন ব্লক করা)
+- `npx tsc --noEmit` — **০ এরর**
+- `npx eslint .` — **০ এরর, ০ ওয়ার্নিং**
+- `npx expo export --platform web` — Metro পুরো অ্যাপ (৯৪৬ মডিউল) সফলভাবে বান্ডল করেছে, অর্থাৎ
+  সব ইমপোর্ট ও `@sbm/domain` ঠিকভাবে যুক্ত হয়েছে
+
+এই যাচাইয়ের সময় কয়েকটি বাস্তব বাগ ধরা পড়ে ঠিক করা হয়েছে (যেমন একটি স্ক্রিনে `Text` ইমপোর্ট
+করা ছিল না — রানটাইমে ক্র্যাশ করত; সিঙ্ক ইঞ্জিনে ভুল ইমপোর্ট পাথ; একটি অসমর্থিত `stock.adjust`
+অফলাইন ইভেন্ট; একটি অনুপস্থিত `cycleId`; দুটি অনুপস্থিত অনুবাদ কী)।
+
+**এখনো যাচাই হয়নি:** কোনো ডিভাইসে বা এমুলেটরে চালানো হয়নি, এবং অ্যান্ড্রয়েড নেটিভ বিল্ড (Gradle)
+পরীক্ষা করা হয়নি।
 
 **অ্যান্ড্রয়েড টুলচেইন আছে এমন মেশিনে যা চালাতে হবে:**
 
@@ -354,6 +399,7 @@ npm install
 npm run build -w @sbm/domain
 cd apps/mobile
 npm install
+npx expo install --check
 npm run typecheck
 npx expo prebuild --platform android
 npx expo run:android --variant debug

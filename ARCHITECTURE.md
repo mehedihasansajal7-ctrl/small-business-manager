@@ -4,13 +4,12 @@
 
 ```
 small-business-manager/
-├── package.json              npm workspaces root (packages/*, apps/api, apps/web)
+├── package.json              npm workspaces root (packages/*, apps/api, apps/web, supabase)
 ├── tsconfig.base.json        strict, ES2022, NodeNext, isolatedModules
 ├── .env.example              every setting, placeholders only
 ├── README.md  TASKS.md  MASTER_PROMPT.md  IMPLEMENTATION_PLAN.md
 ├── ARCHITECTURE.md  DATABASE_SCHEMA.md  SYNC_DESIGN.md  SECURITY.md
 ├── TESTING.md  DEPLOYMENT_FREE.md  ACCOUNTING_RULES.md  AI_AGENT_DESIGN.md
-├── docs/                     ROADMAP · FREE_TIER_LIMITS · PARTNER_GUIDE_BN · DECISIONS
 ├── packages/
 │   └── domain/               @sbm/domain — PURE logic, zero deps, zero I/O
 │       ├── src/  decimal · money · units · inventory · accounting · farming
@@ -18,21 +17,27 @@ small-business-manager/
 │       └── test/ 10 files, 148 tests
 ├── apps/
 │   ├── api/                  @sbm/api — the server (the only thing that touches a DB)
-│   │   ├── src/  config · db · http · auth · repository · sync · ai · routes · server · seed
-│   │   ├── test/ api.test.ts — 32 tests
+│   │   ├── src/  config · db · http · auth · repository · sync · ai · routes · print · server · seed
+│   │   ├── test/ api.test.ts (49) · security.test.ts (12) · http.test.ts (20)
 │   │   └── data/ runtime (gitignored): sbm.db, backups/, attachments/, .session_secret
-│   ├── web/                  @sbm/web — Vite + React PWA   [in progress, unverified]
-│   └── mobile/               @sbm/mobile — Expo/React Native [in progress, unverified]
-└── (supabase/  — DOES NOT EXIST; the Postgres port is a design target only)
+│   ├── web/                  @sbm/web — Vite + React SPA/PWA  [code complete; builds; never
+│   │                           opened in a browser here]  screens/ · components/ · offline/ ·
+│   │                           api/ · i18n/ · state/ · theme/ · public/{manifest,sw.js}
+│   └── mobile/               @sbm/mobile — Expo/React Native [code complete; NO APK built,
+│                               never run on a device]  screens/ (41) · navigation/ ·
+│                               offline/ (SQLite) · components/ · i18n/ · auth/
+├── supabase/                 @sbm/supabase — PostgreSQL/Supabase port: migrations 0001–0007,
+│                               functions 0000–0180 (9 posting RPCs), seed.sql, static tests
+└── docs/                     ROADMAP · FREE_TIER_LIMITS · PARTNER_GUIDE_BN · DECISIONS
 ```
 
-**Not present, do not look for it:** `supabase/migrations`, `supabase/seed.sql`,
-`packages/ui`, `packages/data`, `packages/offline`, `packages/accounting`,
-`packages/farming`, `packages/config`. The master prompt sketches that split; this
-implementation deliberately collapsed those five packages into **one** `packages/domain`,
-because they are mutually dependent (accounting needs money and inventory; farming needs
-money, inventory and accounting) and splitting them would have produced circular workspace
-dependencies for no isolation benefit. That is a recorded decision — see `docs/DECISIONS.md`.
+**Not present, do not look for it:** `packages/ui`, `packages/data`, `packages/offline`,
+`packages/accounting`, `packages/farming`, `packages/config`. The master prompt sketches that
+split; this implementation deliberately collapsed those five packages into **one**
+`packages/domain`, because they are mutually dependent (accounting needs money and inventory;
+farming needs money, inventory and accounting) and splitting them would have produced circular
+workspace dependencies for no isolation benefit. That is a recorded decision — see
+`docs/DECISIONS.md` ADR-008.
 
 `apps/mobile` is **not** in the root `workspaces` array on purpose: the Expo dependency tree
 is large and installing it must be an explicit, opt-in step (`npm install` in
@@ -284,20 +289,23 @@ Notes and limitations, stated plainly:
 
 ## 7. `local` mode vs `shared` mode, and the adapter boundary
 
-`SBM_MODE` (not `MODE` — bundlers claim that name) selects one of two modes. **Only `local`
-is functional today.**
+`SBM_MODE` (not `MODE` — bundlers claim that name) selects one of two modes. **The Node API
+(`apps/api`) only ever uses `local`.** The Postgres layer exists as a separate, complete
+schema/RLS/RPC port in `supabase/` — but `apps/api` has no adapter for it.
 
-| | `local` (default, fully working) | `shared` (config-validated, not implemented) |
+| | `local` (default, fully working) | `shared` |
 |---|---|---|
-| Storage | embedded `node:sqlite` file, `$DATA_DIR/sbm.db` | Supabase Postgres — **no adapter, no migrations, no code** |
+| Storage | embedded `node:sqlite` file, `$DATA_DIR/sbm.db` | PostgreSQL/Supabase — **schema + RLS + RPCs exist in `supabase/`; no adapter in `apps/api`** |
 | Auth | this app's own scrypt users + HMAC session cookie | intended to be Supabase Auth |
 | Credentials needed | **none** | your own free-tier `SUPABASE_URL` + anon key + server-side service-role key |
 | Multi-partner on one device? | yes, separate logins, same process | yes, in principle |
 | Multi-partner across the internet? | only by exposing the one server (LAN or a host) | yes, in principle |
-| Tenant isolation | application-level (repository + `Caller`) | intended to be RLS **plus** application-level |
-| Setup | `node apps/api/dist/server.js` | not possible today |
+| Tenant isolation | application-level (`Repository` + `Caller`) | **RLS on every tenant table** (148 `CREATE POLICY`) *plus* application-level |
+| Migrations | `MIGRATIONS` v1–v6 in `db.ts` | `supabase/migrations/0001…0007` |
+| Verified? | **yes** — booted, health-checked, seeded, 81 API tests | ⚠️ **never executed** — no PostgreSQL server in this environment; 38 static SQL tests only |
+| Setup | `npm run api` | apply the migrations + functions, then write the adapter |
 
-### 7.1 What the config layer already does for shared mode
+### 7.1 What the config layer does for shared mode
 
 `loadConfig()` is honest about it:
 
@@ -313,8 +321,8 @@ is functional today.**
 
 But there is **no code branch anywhere that uses `config.supabase`** to store or read data.
 `SBM_MODE=shared` therefore changes nothing about behaviour today except the reported status
-string and the stricter secret rule. **This is the largest single gap in the project** and it
-is recorded as such in `TASKS.md` and `docs/ROADMAP.md`.
+string and the stricter secret rule. **This remains the largest single gap in the project** and
+is recorded as such in `TASKS.md`, `IMPLEMENTATION_PLAN.md` (R2) and `docs/ROADMAP.md`.
 
 ### 7.2 The adapter boundary that exists, and the one that does not
 
@@ -324,9 +332,14 @@ is recorded as such in `TASKS.md` and `docs/ROADMAP.md`.
   services, the routes and the clients untouched because they never see SQL.
 - **`Database` is also a seam:** `MIGRATIONS` is a data array, not imperative code, so a port
   needs a translation layer rather than a rewrite.
-- **There is no `ports`/`adapters` interface package** — no `RepositoryPort` interface that
-  both implementations satisfy. The boundary is a convention, not a compiled contract.
-  Building the interface first is the right first step for shared mode (TASKS.md phase 3b).
+- **The Postgres half of the seam already exists** as SQL: 46-shaped tables with `numeric`
+  money, RLS policies, integrity triggers, and 9 transactional posting RPCs
+  (`post_sale`, `receive_purchase`, `move_stock`, `post_harvest`, `allocate_cost`,
+  `post_payment`, `create_journal_entry`, `close_cycle`, `void_document`). What is missing is
+  the **TypeScript adapter** in `apps/api` that calls them.
+- **There is still no `ports`/`adapters` interface package** — no `RepositoryPort` interface
+  that both implementations satisfy. The boundary is a convention, not a compiled contract.
+  Defining that interface first is the right first step (TASKS.md Phase 3b / R2).
 - **A useful consequence of `local` mode:** because the API is a plain Node process over a
   file DB, "multi-partner across devices" works **today** without Supabase at all — one
   server on a LAN/IP, partners' phones pointed at it, each with their own login. That is a
@@ -376,13 +389,21 @@ Verified locally on Node v24.19.0.
 
 | Piece | Runtime | Build step | Status |
 |---|---|---|---|
-| `packages/domain` | any JS runtime | `tsc -p tsconfig.json` → `dist/` (ESM + `.d.ts`) | builds clean, typechecks clean |
-| `apps/api` | Node ≥ 22.5 | `tsc -p tsconfig.json` → `dist/`, run `node dist/server.js` | builds clean, typechecks clean |
-| `apps/web` | browser | `vite build` | in progress; `tsc` currently fails (no sources at the time of measurement) |
-| `apps/mobile` | Android (Hermes) | Expo prebuild + Gradle | in progress; no APK produced |
+| `packages/domain` | any JS runtime | `tsc -p tsconfig.json` → `dist/` (ESM + `.d.ts`) | ✅ builds clean, typechecks clean |
+| `apps/api` | Node ≥ 22.5 | `tsc -p tsconfig.json` → `dist/`, run `node dist/server.js` | ✅ builds clean, typechecks clean, boots, 81 tests |
+| `apps/web` | browser | `vite build` → `dist/` | ✅ builds clean (351 kB JS / 101 kB gzip), typechecks clean, 63 tests — ⚠️ never opened in a browser here |
+| `apps/mobile` | Android (Hermes) | `expo prebuild` + Gradle, or `eas build` | ⚠️ typechecks clean as part of the repo — **never built, never run**; no APK |
+| `supabase` | PostgreSQL ≥ 15 / Supabase | apply `migrations/` then `functions/` | ⚠️ 38 static SQL tests pass — **never executed against a live server** |
 
 Root scripts: `npm run typecheck` / `build` / `test` (all `-ws --if-present`), `verify`
-(typecheck + test), `api`, `api:dev`, `web:dev`, `web:build`, `seed`.
+(typecheck + test), `api`, `api:dev`, `web:dev`, `web:build`, `seed`, `supabase:test`.
+
+> Note: an npm-quarantine issue appeared once in earlier output, so `apps/mobile` is installed
+> separately (`cd apps/mobile && npm install`) rather than hoisted by `npm install` at the root.
+> This is deliberate (ADR-005) — the Expo dependency tree is large.
+>
+> ⚠️ **No CI.** There is no pipeline configuration in this repository; every gate above is run
+> locally, from the same commands.
 
 `apps/api` dev mode uses `node --watch --experimental-strip-types src/server.ts` — no
 bundler, no ts-node.

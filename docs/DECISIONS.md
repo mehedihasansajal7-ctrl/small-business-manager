@@ -235,11 +235,18 @@ via a resolved `Caller` whose membership is checked on every request — and mak
 in `SECURITY.md` §3 and §11.3 rather than describing the product as if RLS existed. Add RLS as
 part of building shared mode (R2 in `IMPLEMENTATION_PLAN.md`).
 
-**Cost.** If the SQLite file is ever shared, or a Postgres port is added without RLS, tenant
-isolation rests entirely on the API code path. The two findings in `SECURITY.md` §11.1–11.2
-(sync-pull cost leakage; admin self-granting `business.transfer_ownership`) show that relying
-on a single enforcement layer has already produced real gaps. **This ADR should be superseded,
-not cited as a permanent design.**
+**Update (2026-10-14).** The RLS half has since been **written**: `supabase/migrations/0007`
+contains 148 `CREATE POLICY` statements with `enable` **and** `force row level security` on
+every tenant table, plus `security definer` helpers with a pinned `search_path`, append-only
+table policies and two double-entry guards. So RLS now exists as SQL — but it has **never been
+executed** (no PostgreSQL server here), and `apps/api` still writes to SQLite. The running
+system therefore still depends entirely on the application layer. See ADR-012.
+
+**Cost.** If the SQLite file is ever shared, or the Postgres port is wired up without proving
+RLS, tenant isolation rests entirely on the API code path. The two findings in `SECURITY.md`
+§11.1–11.2 (cost leakage through sync pull / CSV export; admin self-granting
+`business.transfer_ownership`) show that relying on a single enforcement layer has already
+produced real gaps. **This ADR should be superseded, not cited as a permanent design.**
 
 ---
 
@@ -287,3 +294,49 @@ business row. References embed the **business-local** date
 setting exists and is honoured wherever a business row is available). Timestamps remain UTC
 ISO — only *business dates* are localised, which is the correct split but means a reader must
 know which of the two they are looking at.
+
+---
+
+## ADR-012 · Postgres as a full SQL/RPC layer beside the app, not an ORM underneath it
+
+**Status:** implemented as SQL (7 migrations, 148 policies, 10 function files); **never
+executed**. RLS is unproven and `apps/api` has no adapter.
+
+**Context.** The master prompt's central promise is that 2–5 partners share one business from
+different devices and places. That needs a hosted database, and it needs *server-enforced*
+access control — "UI-only access restrictions are not security". Two shapes were possible:
+
+1. an ORM/adapter inside `apps/api` against a hosted Postgres; or
+2. a self-contained Postgres layer (`supabase/`) that owns the schema, RLS policies and the
+   transactional operations, which the API (or any client) calls.
+
+**Decision.** Option 2, deliberately:
+
+- Every rule that must survive a buggy or hostile client is enforced **in the database**:
+  `enable` + `force row level security` on every tenant table, append-only tables with **no**
+  UPDATE/DELETE policy, a `business_id` on every tenant row, a deferrable trigger proving
+  `sum(cost_allocations.amount) = cost_sources.amount`, and two independent double-entry
+  guards (a function check **and** a constraint trigger at commit).
+- Money is `numeric(20,6)`, asserted by a test — never `float`/`real`/`double precision`.
+- The nine posting operations are **RPCs** (`post_sale`, `receive_purchase`, `move_stock`,
+  `post_harvest`, `allocate_cost`, `post_payment`, `create_journal_entry`, `close_cycle`,
+  `void_document`) plus helpers (`redeem_invite`, `next_reference`). A client that speaks to
+  those by name and `jsonb` payload shape does not care whether they run on Supabase, Neon or
+  a self-hosted Postgres — provider independence is an interface, not a promise.
+- The migrations are **files in the repo** (`supabase/migrations/0001…0007`), not a schema
+  generated at runtime, so the tenant boundary is reviewable in a pull request.
+
+**Cost / why this is not finished.**
+
+- **It has never run.** There is no PostgreSQL server in this environment, so 38 tests read the
+  SQL and assert structure. A policy can be syntactically perfect and semantically wrong; only a
+  live second-tenant query proves isolation. **Do not treat RLS as verified.**
+- **`apps/api` cannot use it yet.** There is no adapter, so `SBM_MODE=shared` is cosmetic and
+  the running system is still SQLite with application-level isolation (ADR-009).
+- Duplication is real: the same domain rules now exist as TypeScript (`packages/domain`) and as
+  SQL constraints/triggers. That is intentional (defence in depth) but it means a rule change
+  must be made twice, and the SQL side is only exercised when a real database is present.
+- It also means two permission layers that can **disagree**: the SQLite app applies per-member
+  `grants`/`denials`; the Postgres `has_business_permission()` reads a seeded `role_permissions`
+  table plus business settings. `SECURITY.md` §11.2 notes this. Unify them before shipping
+  shared mode.

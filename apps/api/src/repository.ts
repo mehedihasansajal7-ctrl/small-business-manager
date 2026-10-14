@@ -478,9 +478,48 @@ export class Repository {
 
     const ownerCount = this.db.get<{ count: number }>(`SELECT COUNT(*) AS count FROM members WHERE business_id = ? AND role = 'owner' AND status = 'active'`, [caller.business.id])?.count ?? 0;
     const newRole = patch.role ?? target.role;
+    const actorIsOwner = caller.role === 'owner';
+    const actingOnSelf = target.user_id === caller.user.id;
+
+    // --- Guardrails -------------------------------------------------------
+    // 1. Per-member permission OVERRIDES are an owner-only action, and nobody
+    //    may edit their own: without this, any member with `member.manage`
+    //    could simply grant themselves `business.transfer_ownership` (or
+    //    `business.delete`) and escalate out of their role.
+    if (patch.grants !== undefined || patch.denials !== undefined) {
+      if (!actorIsOwner) throw HttpError.forbidden('Only the owner can change per-member permission overrides');
+      if (actingOnSelf) throw HttpError.badRequest('VALIDATION', 'You cannot change your own permission overrides');
+    }
+    // 2. Only the owner may touch an owner's row (including their denials).
+    if (target.role === 'owner' && !actorIsOwner) throw HttpError.forbidden('Only the owner can change another owner');
+    // 3. An admin cannot modify another admin: that would let two admins fight
+    //    over access. Admins keep day-to-day control over lower roles only.
+    if (!actorIsOwner && target.role === 'admin' && caller.role === 'admin' && !actingOnSelf) {
+      throw HttpError.forbidden('Only the owner can change another admin');
+    }
+    // 4. Nobody may hand out a permission they do not themselves hold.
+    if (patch.grants) {
+      const allPermissions = permissionsFor('owner');
+      const held = this.permissions(caller);
+      for (const granted of patch.grants) {
+        if (!allPermissions.has(granted as Permission)) throw HttpError.badRequest('VALIDATION', `Unknown permission: ${granted}`);
+        if (!held.has(granted as Permission)) throw HttpError.forbidden(`You cannot grant a permission you do not hold: ${granted}`);
+      }
+    }
+    if (patch.denials) {
+      const allPermissions = permissionsFor('owner');
+      for (const denied of patch.denials) {
+        if (!allPermissions.has(denied as Permission)) throw HttpError.badRequest('VALIDATION', `Unknown permission: ${denied}`);
+      }
+    }
+    // 5. A member cannot suspend or remove themselves.
+    if (patch.status !== undefined && patch.status !== 'active' && actingOnSelf) {
+      throw HttpError.badRequest('VALIDATION', 'You cannot suspend or remove yourself');
+    }
 
     if (patch.role && patch.role !== target.role) {
-      // Ownership transfer needs an explicit permission, matched to the domain guardrails.
+      // Ownership transfer needs the explicit permission; other role changes are
+      // ordinary management.
       if (newRole === 'owner' || target.role === 'owner') this.assertPermission(caller, 'business.transfer_ownership');
       else this.assertPermission(caller, 'member.manage');
       if (target.role === 'owner' && newRole !== 'owner' && ownerCount <= 1) {
@@ -488,17 +527,16 @@ export class Repository {
       }
     } else if (patch.status !== undefined) {
       this.assertPermission(caller, 'member.manage');
-      if (patch.status !== 'active' && target.user_id === caller.user.id) throw HttpError.badRequest('VALIDATION', 'You cannot suspend or remove yourself');
-      if (patch.status !== 'active' && target.role === 'owner' && ownerCount <= 1) throw HttpError.conflict('LAST_OWNER', 'Cannot deactivate the only owner.');
+      if (patch.status !== 'active' && target.role === 'owner' && ownerCount <= 1) {
+        throw HttpError.conflict('LAST_OWNER', 'Cannot deactivate the only owner.');
+      }
+    } else if (patch.role === undefined && patch.status === undefined && patch.grants === undefined && patch.denials === undefined) {
+      throw HttpError.badRequest('VALIDATION', 'Nothing to update');
     } else {
       this.assertPermission(caller, 'member.manage');
     }
 
-    if (patch.role && newRole !== target.role) {
-      // Keep at least one owner at all times.
-      if (newRole === 'owner') this.db.run(`UPDATE members SET role = ? WHERE id = ?`, [newRole, memberId]);
-      else this.db.run(`UPDATE members SET role = ? WHERE id = ?`, [newRole, memberId]);
-    }
+    if (patch.role && newRole !== target.role) this.db.run(`UPDATE members SET role = ? WHERE id = ?`, [newRole, memberId]);
     if (patch.status) this.db.run('UPDATE members SET status = ? WHERE id = ?', [patch.status, memberId]);
     if (patch.grants) this.db.run('UPDATE members SET grants = ? WHERE id = ?', [JSON.stringify(patch.grants), memberId]);
     if (patch.denials) this.db.run('UPDATE members SET denials = ? WHERE id = ?', [JSON.stringify(patch.denials), memberId]);

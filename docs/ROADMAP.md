@@ -3,8 +3,11 @@
 Ordered so that each step makes the product *usable by a real partner* sooner. Dependency
 notes are explicit. Nothing here is a promise of a date.
 
-Current honest baseline (2026-10-14): the **server** is a working, tested service (148 domain
-+ 32 API tests passing); there is **no verified user interface**; nothing is deployed.
+Current honest baseline (2026-10-14, 13:44–13:47): **330 tests passing** (148 domain, 81 api,
+63 web, 38 supabase); `npm run typecheck` passes in all four workspaces; `npm run build`
+succeeds and produces the web bundle. The server, the web client, the Android client and the
+Postgres/RLS layer all exist as code. **Nothing is deployed, no APK exists, no device has
+rendered a screen, and no Postgres server has ever run the migrations.**
 
 ---
 
@@ -14,67 +17,67 @@ Small, cheap, and each one removes a way this project could embarrass its owner.
 
 | # | Task | Why | Done when |
 |---|---|---|---|
-| 0.1 | Fix `GET /api/sync/pull` cost leakage | a viewer/cashier can currently read journal lines and `unit_cost` (SECURITY §11.1) | a cashier's pull contains no cost field; a test proves it |
-| 0.2 | Restrict `member.manage` grants | an admin can currently self-grant `business.transfer_ownership` (SECURITY §11.2) | you cannot grant a permission you do not hold; a test proves it |
+| 0.1 | Fix `GET /api/sync/pull` cost leakage | a viewer/cashier can read journal lines and `unit_cost`; the same is true of the `journal_lines` **CSV export** for a manager (SECURITY §11.1) | a cashier's pull and a manager's export contain no cost field; tests prove it |
+| 0.2 | Restrict `member.manage` grants | an admin can self-grant `business.transfer_ownership` (SECURITY §11.2) | you cannot grant a permission you do not hold; a test proves it |
 | 0.3 | Map `FarmingError` to 400 | `OVER_ALLOCATION`/`ZERO_BASIS` can surface as 500 | a test asserts 400 for an over-allocated shared cost |
 | 0.4 | Return 409 on a duplicate `reference` | two devices typing the same invoice number currently get a 500-shaped failure | the API returns a clean 409 with a usable message |
-| 0.5 | Re-run and record the full verification | `apps/web`/`apps/mobile` are moving targets; the current numbers may be stale | `TESTING.md` updated with fresh output |
+| 0.5 | Re-run and record the full verification | the tree changes fast; `TESTING.md` can go stale | `TESTING.md` updated with fresh output |
 | 0.6 | Decide on the dead schema | `devices`, `product_categories`, `financial_accounts`, `businesses.settings`, `farms.latitude/longitude` | each is either wired up or dropped |
+| 0.7 | De-duplicate `GET /api/sync/pull` in `routes.ts` | it is registered twice | one registration |
 
-## Milestone 1 — One verified vertical slice of UI
+## Milestone 1 — Actually run the app
 
-**Why first:** a tested backend with no screen is not a product, and every UI decision made
-before a slice exists tends to be wrong.
-
-| # | Task | Notes |
-|---|---|---|
-| 1.1 | Get `npm run web:build` green | `tsc` currently fails in `apps/web` (no sources at measurement time) |
-| 1.2 | Login → business creation → dashboard | the smallest end-to-end path that touches auth, tenancy and reports |
-| 1.3 | Record a sale | includes the negative-stock 409 path and the "review before confirm" flow |
-| 1.4 | See it in the trial balance and P&L | proves the ledger is wired to the UI, not to a dashboard formula |
-| 1.5 | Bilingual switch + `৳12,34,567.89` formatting | `formatMoney(..., {banglaDigits})` and `formatDateBn` already exist and are tested |
-| 1.6 | Sync status chip (Offline/Pending/Syncing/Synced/Needs attention/Conflict) | `syncBanner()` and `SYNC_STATUS_LABEL` are already bilingual and tested |
-
-**Exit criterion:** a partner can sign in, record a sale, and see the accounting result
-update — with the mode/status indicators honest.
-
-## Milestone 2 — Real offline on the device
-
-The server side of sync is done and tested (20 domain + 4 API tests). What is missing is the
-**client** half: durable local persistence and the outbox worker. The rule for this milestone
-is to pick **one** action — "record a sale" — make it work end to end with real persistence and
-a real outbox, prove duplicate-safety across a simulated crash, and only then generalise.
+**Why first:** the code builds and passes 330 tests, but **no human has seen a screen**. Bugs
+in layout, navigation, cookie handling, IndexedDB, native modules and the service worker are
+all invisible until it runs.
 
 | # | Task | Notes |
 |---|---|---|
-| 2.1 | Durable local store (IndexedDB / SQLite) written in the **same transaction** as the record change | the contract the server already assumes |
-| 2.2 | The sync worker: drain the outbox, apply backoff/jitter, honour `nextAttemptAt` | `retryDelayMs`, `shouldRetry`, `statusAfterFailure` already exist and are tested |
-| 2.3 | Never show a high-risk event as posted before `SYNCED` | `isConfirmed()`, `HIGH_RISK_EVENTS` exist |
-| 2.4 | Conflict screen | `analyseFieldConflict` + `MERGEABLE_FIELDS` exist; the server must start reporting real `differingFields` (SYNC_DESIGN §5.2) |
-| 2.5 | Test: kill the app mid-sync, relaunch → no duplicate, no loss | the master prompt's end-to-end checklist |
-| 2.6 | Test: two devices sell the last 10 kg concurrently → one succeeds, one gets a visible conflict | the negative-stock guard is already server-side |
-| 2.7 | Implement or remove `stock.move` / `journal.post` from `HIGH_RISK_EVENTS` | SYNC_DESIGN §7.1 |
+| 1.1 | `npm run web:dev` and walk SignIn → Setup → Dashboard | set `INSECURE_COOKIES=1` for local HTTP or the session cookie will not be stored |
+| 1.2 | Record a sale through the UI | includes the negative-stock `409` path and the "review before confirm" flow |
+| 1.3 | Confirm the trial balance and P&L update from a UI action | proves the ledger is wired to the screen, not to a dashboard formula |
+| 1.4 | Verify the bilingual switch and `৳12,34,567.89` formatting on screen | the formatter is already unit-tested |
+| 1.5 | Verify the sync status chip and the PWA install prompt | `manifest.webmanifest` + `sw.js` exist; service workers need HTTPS or `localhost` |
+| 1.6 | Run the Expo app on an emulator and walk the same path | nothing about the native app has been observed |
 
-**Exit criterion:** the master prompt's manual e2e checklist
-(register owner → invite 2 partners → sales on two devices → disconnect → reconnect → no
-duplicates) passes with evidence.
+**Exit criterion:** someone has completed a sale in a real browser **and** on an emulator, and
+the reports they see match the API's numbers.
 
-## Milestone 3 — Shared cloud mode (the multi-city case)
+## Milestone 2 — Prove offline on a real device
 
-Only needed if partners are not on the same network. **This is the largest remaining piece
-and it is where the security requirement is strictest.**
+The server side of sync is done and tested. The client outbox now **exists** in both clients
+(IndexedDB + SQLite, 17 unit tests, plus a 10-test protocol suite driving a real API). What is
+still missing is proof on a device.
 
 | # | Task | Notes |
 |---|---|---|
-| 3.1 | Extract a `RepositoryPort` interface that today's SQLite `Repository` satisfies | makes the seam a compiled contract, not a convention (ARCHITECTURE §7.2) |
-| 3.2 | Postgres/Supabase implementation of that interface | `numeric` for money, never float; keep both `UNIQUE` constraints |
-| 3.3 | `supabase/migrations` + `seed.sql` | a direct translation of migrations v1–v6 |
-| 3.4 | **RLS policies on every tenant table** and a second-tenant test suite | the master prompt: "UI-only access restrictions are not security" |
+| 2.1 | Confirm local persistence is written in the **same transaction** as the record change | the contract the server assumes |
+| 2.2 | Test: kill the app mid-sync, relaunch → no duplicate, no loss | the master prompt's core offline promise; **never run** |
+| 2.3 | Test: two devices sell the last 10 kg while offline, then both reconnect | one succeeds, one gets a visible conflict — never a silent negative balance |
+| 2.4 | Make the server report real `differingFields` (today it writes `["unknown"]`) | so the conflict screen can show *what* differed (SYNC_DESIGN §5.2) |
+| 2.5 | Implement or remove `stock.move` / `journal.post` from `HIGH_RISK_EVENTS` | the web outbox already refuses them; the two lists should agree (SYNC_DESIGN §7.1) |
+| 2.6 | Verify a `LOCAL_WINS` decision actually replays the payload | today the server only records the decision; the client must re-submit |
+
+**Exit criterion:** the master prompt's e2e checklist (register owner → invite 2 partners →
+sales on two devices → disconnect → reconnect → no duplicates) passes with evidence.
+
+## Milestone 3 — Make shared mode real
+
+The schema, RLS and 9 RPCs exist in `supabase/`. What is missing is (a) **running them once**
+and (b) the adapter in `apps/api`.
+
+| # | Task | Notes |
+|---|---|---|
+| 3.1 | Apply `supabase/migrations` + `functions` to a real Postgres/Supabase project | **never done**; `supabase/tests` reads SQL instead |
+| 3.2 | Prove RLS from a second tenant's session | the §3 verification queries in `supabase/README.md`; a valid-looking policy can still be wrong |
+| 3.3 | Extract a `RepositoryPort` interface that today's SQLite `Repository` satisfies | makes the seam a compiled contract, not a convention |
+| 3.4 | Write the Postgres adapter (or call the existing RPCs) from `apps/api` | until then `SBM_MODE=shared` is cosmetic |
 | 3.5 | Never ship the service-role key to a client; anon key only, protected by RLS | already the documented rule |
-| 3.6 | Restore/backup against the cloud database | there is no restore path today at all |
+| 3.6 | A cloud backup + restore drill | the free plan has no daily backups |
 
-**Exit criterion:** two businesses' sessions cannot see or mutate each other's rows **even
-with the API bypassed** (i.e. RLS proven, not just app code).
+**Exit criterion:** two businesses' sessions cannot see or mutate each other's rows **even with
+the API bypassed** (RLS proven, not just app code), and a partner in another city can sign in
+and sync.
 
 ## Milestone 4 — Android that a partner can install
 
@@ -83,7 +86,7 @@ with the API bypassed** (i.e. RLS proven, not just app code).
 | 4.1 | Install JDK 17 + Android SDK (or use a free Expo account with `eas build`) | no APK was produced here because neither is present in this environment |
 | 4.2 | `expo prebuild` + `gradlew assembleRelease`, sign with a local keystore | `apps/mobile` already declares `apk:debug`/`apk:release` |
 | 4.3 | Sideload and test on a real cheap phone | must work on a low-end device, not just an emulator |
-| 4.4 | PWA installability on the web build | manifest + service worker + offline app shell |
+| 4.4 | Point the APK at a reachable API (`EXPO_PUBLIC_API_URL`) over HTTPS | Android blocks cleartext HTTP in release builds |
 | 4.5 | Bangla IME/typing and small-screen testing | a Bangla-first product must be usable in Bangla |
 
 **Explicitly out of scope forever:** Google Play publication. It costs money and is not

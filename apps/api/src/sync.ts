@@ -220,39 +220,99 @@ export class SyncService {
   /**
    * Pull everything the device is missing. `since` is an ISO timestamp; the
    * caller always receives only their own business's rows.
+   *
+   * Permission-aware redaction matters here: a pull is the whole dataset, so a
+   * cashier (who has no `purchase.cost.view`) must not receive unit costs, COGS
+   * or purchase prices, and a role without `financial_reports.view` must not
+   * receive the journal (which would expose partner capital and full margins).
    */
   pull(caller: Caller, since: string): Record<string, unknown> {
     const businessId = caller.business.id;
     const sinceIso = since || '1970-01-01T00:00:00.000Z';
+    const permissions = this.repo.permissions(caller);
+    const canSeeCosts = permissions.has('purchase.cost.view');
+    // COGS reveals margin, so it is gated on financial visibility, not merely on
+    // purchase-cost visibility.
+    const canSeeMargins = permissions.has('financial_reports.view');
+    const canSeeFarmingCosts = permissions.has('farming.cost.view');
+    const canSeeCapital = permissions.has('partner_capital.view');
+
+    /** Copy rows without the fields this caller must not see. */
+    const without = (rows: Record<string, unknown>[], fields: readonly string[]): Record<string, unknown>[] =>
+      rows.map((row) => {
+        const clone = { ...row };
+        for (const field of fields) delete clone[field];
+        return clone;
+      });
+
     const rows = <T>(sql: string, params: readonly unknown[]) => this.repo.db.all<T>(sql, params);
+    const costFields = ['unit_cost', 'cogs', 'purchase_price', 'tax_rate', 'subtotal', 'cost_basis', 'value'];
+
+    let products = rows<Record<string, unknown>>('SELECT * FROM products WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]);
+    if (!canSeeCosts) products = without(products, ['purchase_price', 'tax_rate']);
+
+    let sales = rows<Record<string, unknown>>('SELECT * FROM sales WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]);
+    if (!canSeeMargins) sales = without(sales, ['cogs']);
+
+    let purchases = rows<Record<string, unknown>>('SELECT * FROM purchases WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]);
+    if (!canSeeCosts) purchases = without(purchases, ['subtotal', 'tax']);
+
+    let saleLines = rows<Record<string, unknown>>('SELECT l.* FROM sale_lines l JOIN sales s ON s.id = l.sale_id WHERE l.business_id = ? AND s.updated_at > ?', [businessId, sinceIso]);
+    if (!canSeeCosts) saleLines = without(saleLines, ['unit_cost']);
+
+    let purchaseLines = rows<Record<string, unknown>>('SELECT l.* FROM purchase_lines l JOIN purchases p ON p.id = l.purchase_id WHERE l.business_id = ? AND p.updated_at > ?', [businessId, sinceIso]);
+    if (!canSeeCosts) purchaseLines = without(purchaseLines, ['unit_cost']);
+
+    let stockMovements = rows<Record<string, unknown>>('SELECT * FROM stock_movements WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]);
+    if (!canSeeCosts) stockMovements = without(stockMovements, ['unit_cost']);
+
+    let harvests = rows<Record<string, unknown>>('SELECT * FROM harvests WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]);
+    if (!canSeeFarmingCosts) harvests = without(harvests, ['cost_basis', 'unit_cost']);
+
+    // The journal and cost allocations are withheld entirely, not just trimmed:
+    // a line-level view cannot be redacted usefully.
+    const journalEntries = canSeeMargins ? rows<Record<string, unknown>>('SELECT * FROM journal_entries WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]) : [];
+    let journalLines = canSeeMargins
+      ? rows<Record<string, unknown>>('SELECT l.* FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id WHERE l.business_id = ? AND e.created_at > ?', [businessId, sinceIso])
+      : [];
+    if (!canSeeCapital) journalLines = without(journalLines, ['partner_id']);
+    const costAllocations = canSeeFarmingCosts ? rows<Record<string, unknown>>('SELECT * FROM cost_allocations WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]) : [];
+
+    // A conflict's `detail` carries the raw payloads, so only roles that may see
+    // margins get the body; everybody still sees that a conflict needs resolving.
+    let conflicts = rows<Record<string, unknown>>(`SELECT * FROM sync_conflicts WHERE business_id = ? AND status = 'OPEN'`, [businessId]);
+    if (!canSeeMargins) conflicts = without(conflicts, ['detail']);
+
+    void costFields;
 
     return {
       since,
       serverTime: new Date().toISOString(),
+      serverTimeIso: new Date().toISOString(),
       businessRevision: this.repo.getBusiness(businessId).revision,
+      costVisibility: { unitCosts: canSeeCosts, cogsAndMargins: canSeeMargins, financialReports: canSeeMargins, farmingCosts: canSeeFarmingCosts, partnerCapital: canSeeCapital },
       business: (() => {
         const b = this.repo.getBusiness(businessId);
         return { id: b.id, name: b.name, currency: b.currency, timezone: b.timezone, locale: b.locale, farmingTypes: JSON.parse(b.farming_types || '[]'), revision: b.revision };
       })(),
-      products: rows('SELECT * FROM products WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]),
+      products,
       customers: rows('SELECT * FROM customers WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]),
       suppliers: rows('SELECT * FROM suppliers WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]),
       locations: rows('SELECT * FROM locations WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]),
-      sales: rows('SELECT * FROM sales WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]),
-      saleLines: rows('SELECT l.* FROM sale_lines l JOIN sales s ON s.id = l.sale_id WHERE l.business_id = ? AND s.updated_at > ?', [businessId, sinceIso]),
-      purchases: rows('SELECT * FROM purchases WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]),
-      purchaseLines: rows('SELECT l.* FROM purchase_lines l JOIN purchases p ON p.id = l.purchase_id WHERE l.business_id = ? AND p.updated_at > ?', [businessId, sinceIso]),
-      stockMovements: rows('SELECT * FROM stock_movements WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]),
-      journalEntries: rows('SELECT * FROM journal_entries WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]),
-      journalLines: rows('SELECT l.* FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id WHERE l.business_id = ? AND e.created_at > ?', [businessId, sinceIso]),
+      sales,
+      saleLines,
+      purchases,
+      purchaseLines,
+      stockMovements,
+      journalEntries,
+      journalLines,
       farms: rows('SELECT * FROM farms WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]),
       farmUnits: rows('SELECT * FROM farm_units WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]),
       cycles: rows('SELECT * FROM production_cycles WHERE business_id = ? AND updated_at > ?', [businessId, sinceIso]),
       farmingEvents: rows('SELECT * FROM farming_events WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]),
-      harvests: rows('SELECT * FROM harvests WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]),
-      costAllocations: rows('SELECT * FROM cost_allocations WHERE business_id = ? AND created_at > ?', [businessId, sinceIso]),
-      conflicts: rows(`SELECT * FROM sync_conflicts WHERE business_id = ? AND status = 'OPEN'`, [businessId]),
-      serverTimeIso: new Date().toISOString(),
+      harvests,
+      costAllocations,
+      conflicts,
     };
   }
 

@@ -149,10 +149,15 @@ arrays) and `Repository.permissions()`.
 | `ai.use` | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | · |
 
 Permissions **defined but not yet enforced by any route or repository method** (honest
-list): `sale.void`, `purchase.return`, `sale.return` (no return endpoint exists),
-`stock_count.approve`, `finance.opening_balance`, `payroll.view`/`payroll.manage`,
-`personal_data.view`, `business.delete`, `backup.manage` is enforced (backup export).
-They exist so the matrix is complete and so future features are permission-gated from birth.
+list): `sale.return` (a *sale return* as a separate document does not exist — voiding a sale
+does, under `sale.void`), `stock_count.create`/`stock_count.approve` (no stock-count endpoint
+yet; adjustments cover the need today), `payroll.view`/`payroll.manage`, `personal_data.view`
+and `business.delete`.
+Several that used to be on this list **are** now enforced: `backup.manage` (backup export
+**and** restore), `finance.opening_balance`, `sale.void`, and `purchase.return` (voiding a
+purchase sets `status = 'RETURNED'`).
+The unenforced permissions exist so the matrix is complete and so future features are
+permission-gated from birth.
 
 ### 2.3 Where permissions are enforced
 
@@ -197,8 +202,10 @@ button the role lacks simply gets 403.
 
 ## 3. Tenant isolation — the enforcement points
 
-There is **no row-level security** (SQLite has none, and the Postgres port does not exist).
-Isolation is enforced in the application layer, at these exact points:
+There is **no row-level security in the embedded SQLite store** — SQLite has none. The
+Postgres layer in `supabase/` **does** carry RLS (148 policies, `enable` + `force` on every
+tenant table), but it has never been executed and `apps/api` does not use it. In the running
+API, isolation is enforced in the application layer, at these exact points:
 
 | Point | Mechanism |
 |---|---|
@@ -303,10 +310,12 @@ Source: `POST|GET /api/attachments/:entityType/:entityId` in `routes.ts`.
 | Explicit honesty in the API | the response includes: *"Attachments are stored on this server and are NOT shared with partners who are offline."* |
 
 **Not implemented (gaps):** MIME type is taken from the **client's `content-type` header**
-and is not verified against the file's magic bytes; there is no virus/malware scan; there is
-**no endpoint that returns the file bytes** (only metadata), so attachments are effectively
-write-only via the API today; there is no delete or expiry; and the `checksum` is stored but
-never re-verified.
+and is **not** verified against the file's magic bytes; there is no virus/malware scan; there
+is no delete, expiry or retention (rows accumulate); and the stored `checksum` is recorded but
+never re-verified on download. A permission-checked **content download**
+(`GET /api/attachments/:entityType/:entityId/:attachmentId/content`) does exist — the test
+`serves attachment bytes only to the owning business and verifies the checksum` covers the
+tenant boundary.
 
 ---
 
@@ -318,7 +327,7 @@ never re-verified.
 | `.env.example` | placeholders only; header says *"All values below are PLACEHOLDERS"* |
 | `SESSION_SECRET` | required (≥32 chars) in `shared` mode. In `local` mode, if unset, a 48-byte random secret is generated and written to `DATA_DIR/.session_secret` with mode `0600` so sessions survive restarts |
 | `SUPABASE_SERVICE_ROLE_KEY` | `.env.example` states plainly: *"Server-side only. Used by the API in shared mode; NEVER exposed to web/APK."* It is read in `config.ts` and is **not** in any response — `describeConfig()` exposes only `supabaseConfigured: boolean` |
-| `SUPABASE_ANON_KEY` | the only key that may be shipped to a client, and only because RLS is assumed. Note: RLS is not implemented yet (§11) |
+| `SUPABASE_ANON_KEY` | the only key that may be shipped to a client, and only because RLS is assumed. Note the two caveats: the Postgres RLS policies have **never been executed**, and `apps/api` does not use the Postgres layer at all today (see §11.3) |
 | `AI_API_KEY` | server-side only; sent as a `Bearer` header from the API. `describeConfig()` exposes only `hasKey: boolean` |
 | `describeConfig()` | returns mode, database kind, timezone/currency/locale, booleans for key presence, AI provider name, research provider name, limits, `secureCookies`. **No secret value, no key material, no connection string** |
 | Logging | the only `process.stdout`/`stderr` writes are the startup line, the AI-mode line, `[jobs]` messages and a `[slow]` line for requests over 1.5 s containing the method, path, elapsed ms and client IP. **No request bodies, no headers, no cookies, no passwords** are logged |
@@ -483,33 +492,58 @@ limitation message.
 
 ## 11. Known security gaps and findings — read this before going live
 
-### 11.1 Finding: a low-privilege member can read cost data through sync pull
+### 11.1 Finding: low-privilege members can read cost data through sync pull **and** CSV export
 
-`GET /api/sync/pull` requires only membership (no `assertPermission`) and returns
-`stockMovements` (including `unit_cost`), `journalEntries`/`journalLines` (every account,
-debit and credit, including COGS and expense accounts), and `sales`/`purchases` with cost
-columns — for the whole business. A `viewer` or `cashier` who is deliberately denied
-`financial_reports.view` / `purchase.cost.view` can obtain the same numbers this way, which
-contradicts the owner's cost-visibility setting. **Mitigation needed:** permission-filter the
-pull payload (or exclude cost columns for roles without the cost permissions) before this is
-used with real partners.
+Two independent paths return full cost/financial detail to a role that the permission matrix
+says must not see it (verified by reading the code):
+
+1. **`GET /api/sync/pull`** requires only membership — **no `assertPermission`** — and
+   `SyncService.pull()` returns `stockMovements` (including `unit_cost`),
+   `journalEntries`/`journalLines` (every account, debit and credit, including COGS and
+   expense accounts) and the `sales`/`purchases` cost columns, for the whole business.
+2. **`GET /api/reports/export/:table`** requires `report.export`, which **`manager`** (not
+   `viewer`) holds. The allowlist includes **`journal_lines`** — i.e. a manager who is
+   deliberately denied `financial_reports.view` can download the entire general ledger as CSV.
+
+A `viewer` or `cashier` denied `financial_reports.view`/`purchase.cost.view` therefore obtains
+the same numbers anyway, which contradicts the owner's cost-visibility setting.
+
+**Mitigation needed:** permission-filter both payloads (or omit cost columns/ledger rows for
+roles without the cost permissions) and add tests asserting that a cashier's pull and a
+manager's CSV export contain no cost fields. Until then, treat `viewer`/`cashier`/`manager`
+accounts as cost-visible.
 
 ### 11.2 Finding: `member.manage` permits self-granting `business.transfer_ownership`
 
 `Repository.permissions()` applies per-member `grants` unconditionally, and `updateMember`
-allows a caller with `member.manage` (which **admin** holds) to write `grants` on any member
-— including themselves — without restricting which permissions may be granted. An admin can
-therefore grant themselves `business.transfer_ownership` (and `business.delete`) and then
-transfer ownership, which the role matrix says only an owner can do. **Mitigation needed:**
-disallow granting permissions the caller does not itself hold (or restrict grants to a safe
-subset).
+writes `patch.grants` without restricting **which** permissions may be granted. Admin holds
+`member.manage`, so an admin can grant themselves `business.transfer_ownership` (and
+`business.delete`) and then transfer ownership — exactly what the role matrix reserves for an
+owner. Verified in the current `apps/api/src/repository.ts`.
 
-### 11.3 No RLS, no Postgres port
+Note the two layers may *disagree*: the Postgres port's `has_business_permission()` reads a
+seeded `role_permissions` table plus `business_settings`, and the Postgres `business_members`
+schema may not carry per-member grants at all. Confirm the intended behaviour before choosing a
+fix.
 
-Isolation is application-level only. If this schema is ever placed behind Postgres (or the
-SQLite file is shared), every protection documented in §3 depends on the API code path. The
-master prompt's requirement — *"server-enforced database policies (e.g. RLS) for every
-tenant-owned table. UI-only access restrictions are not security"* — is **not met**.
+**Mitigation needed:** forbid granting a permission the caller does not itself hold (or
+restrict grants to a safe subset), and add a test.
+
+### 11.3 RLS exists in SQL but has never run
+
+`supabase/migrations/0007_policies_indexes.sql` contains **148 `CREATE POLICY`** statements
+with `enable` **and** `force row level security` on every tenant table, and the helpers are
+`security definer` with a pinned `search_path`. That is the right design and it is asserted by
+38 **static** SQL tests.
+
+But: there is **no PostgreSQL server in this environment**, so the migrations and policies have
+**never been executed**, and `apps/api` still writes to SQLite. So today the running system's
+isolation is application-level only, and the master prompt's requirement — *"server-enforced
+database policies (e.g. RLS) for every tenant-owned table. UI-only access restrictions are not
+security"* — is **met in code and unproven in practice**.
+
+**Mitigation needed:** apply the migrations to a real project and prove isolation from a second
+tenant's session (`supabase/README.md` §3), then write the adapter (R2).
 
 ### 11.4 Other gaps
 
@@ -517,47 +551,66 @@ tenant-owned table. UI-only access restrictions are not security"* — is **not 
 |---|---|
 | No CSRF token | State-changing requests are cookie-authenticated. `SameSite=Lax` blocks cross-site form POSTs in modern browsers, which is the current mitigation, but there is no token |
 | No password reset, email verification or MFA | none implemented; nothing sends email |
-| Rate limiter is per-process and in-memory | resets on restart; does not work across replicas |
+| Rate limiter is per-process and in-memory | resets on restart; does not work across replicas. **Sync endpoints have no rate limit at all** (up to 200 events per push) |
 | `x-forwarded-for` is trusted | a client that can set that header can rotate its rate-limit key unless a trusted proxy strips it |
 | Sessions last 30 days by default | `SESSION_TTL_HOURS=720`; no idle timeout, no re-auth for sensitive actions |
 | No encryption at rest | the SQLite file and `DATA_DIR/.session_secret` are plaintext on disk; a full-disk backup of `DATA_DIR` contains everything |
 | Attachment MIME not verified by magic bytes | the client's `content-type` is stored verbatim (compare the SFUWT project, which *does* magic-byte validate uploads) |
-| No attachment download endpoint | metadata only — attachments cannot actually be retrieved through the API |
-| Inconsistent export auditing | the CSV export is not audited; the JSON backup is |
+| Inconsistent export auditing | the CSV export is **not** audited; the JSON backup **and restore** are |
 | Failed logins are not audited | only successful ones (`auth.login`) |
 | No dependency/SCA scanning, no CI | there is no CI configuration in this repo |
 | Error messages can echo input | `VALIDATION` messages include field names and, in places, the rejected value; no stack traces are returned (a generic `INTERNAL` message is used for unexpected errors) |
+| `FarmingError` may map to `500` | `NO_TARGETS`/`ZERO_BASIS`/`OVER_ALLOCATION` are input errors but are not in the classifier |
 | No account lockout | repeated failures are only rate-limited |
 | `viewer` has no `ai.use` but *does* have `inventory.view`/`report.view` | intended, noted so it is not mistaken for a bug |
+| `GET /api/sync/pull` is registered twice in `routes.ts` | harmless (first match wins) but it is dead code |
 
 ---
 
 ## 12. Security-relevant tests that exist
 
-`apps/api/test/api.test.ts`:
+`apps/api/test/api.test.ts` (**49 tests**) — the security-relevant subset:
 
-1. `'requires a session for protected endpoints'` — unauthenticated access is refused.
-2. `'rejects weak or duplicate registrations and bad logins'`.
-3. `'removes the session on logout'`.
-4. `'never lets one business read or mutate another business'` — tenant isolation.
-5. `'lets an owner invite a partner who joins the same workspace with a different role'`.
-6. `'rejects a revoked invite and an unknown code'`.
-7. `'blocks demoting or removing the only owner'`.
-8. `'enforces least privilege server-side, not just in the UI'`.
-9. `'lets the owner widen partner visibility with a setting'`.
-10. `'refuses negative stock by default, even for the owner'`.
-11. `'rejects a discount without the discount permission'`.
-12. `'refuses to apply access changes from an offline queue'`.
-13. `'reports a conflict when a partner edits a record that changed on the server'`.
-14. `'pulls only the caller own business changes'`.
-15. `'never leaks restricted cost data to a role that cannot see it'` (AI).
-16. `'rejects AI use for a role without the permission'`.
-17. `'audits sensitive actions'`.
-18. `'rejects malformed input instead of storing it'`.
-19. `'rate limits repeated login failures'`.
+| Test | Area |
+|---|---|
+| `rejects weak or duplicate registrations and bad logins` | auth |
+| `requires a session for protected endpoints` | auth |
+| `removes the session on logout` | sessions |
+| `never lets one business read or mutate another business` | tenant isolation |
+| `lets an owner invite a partner who joins the same workspace with a different role` | invites |
+| `rejects a revoked invite and an unknown code` | invites |
+| `blocks demoting or removing the only owner` | ownership guardrails |
+| `enforces least privilege server-side, not just in the UI` | permissions |
+| `lets the owner widen partner visibility with a setting` | visibility settings |
+| `rejects a discount without the discount permission` | permissions |
+| `refuses negative stock by default, even for the owner` | stock override |
+| `requires the void permission and a reason` | corrections |
+| `reports stock valuation and hides cost detail without permission` | cost redaction |
+| `serves attachment bytes only to the owning business and verifies the checksum` | attachments |
+| `refuses to restore a backup whose journal does not balance` | restore safety |
+| `is available to any role with report.view but not to a bare viewer without it` | permissions |
+| `honours the threshold parameters and needs report.view` (alerts) | permissions |
+| `refuses to apply access changes from an offline queue` | sync guard |
+| `reports a conflict when a partner edits a record that changed on the server` | conflict detection |
+| `pulls only the caller own business changes` | tenant isolation |
+| `never leaks restricted cost data to a role that cannot see it` | AI context |
+| `rejects AI use for a role without the permission` | AI permissions |
+| `rejects malformed input instead of storing it` | input validation |
+| `rate limits repeated login failures` | rate limiting |
 
-`packages/domain/test/permissions.test.ts` (16 tests) covers the role matrix, the
-denial-wins rule, `assertPermission` throwing a named `PermissionError`, cost-field
-redaction and the membership guardrails. `tenancy.test.ts` (10 tests) covers invite
-entropy, normalisation, expiry, **never storing the raw code**, and every redemption
-rejection reason including email mismatch.
+`apps/api/test/security.test.ts` (**12 tests**): invite expiry; email-scoped invites bind to
+that email only; **one partner in two businesses keeps their data apart**; **a suspended
+member is rejected**; **an upload is stored for the owning business only, with a checksum**;
+**audit records carry the actor and detail and are read-only for members without permission**.
+
+`apps/api/test/http.test.ts` (**20 tests**): `HttpError` status helpers; route matching and
+`405`; cookie parse/serialise (`HttpOnly`/`Secure`/`SameSite`); the JSON body size limit;
+`RateLimiter` windows and pruning; `clientIp`; every input validator.
+
+`packages/domain/test/permissions.test.ts` (16) covers the role matrix, the denial-wins rule,
+`assertPermission` throwing a named `PermissionError`, cost-field redaction and the membership
+guardrails. `tenancy.test.ts` (10) covers invite entropy, normalisation, expiry, **never
+storing the raw code**, and every redemption rejection reason including email mismatch.
+`apps/web/test/permissions.test.ts` (9) and `apps/web/test/outbox.test.ts` (17) cover the
+client-side equivalent (field redaction; refusing event types the server cannot replay offline,
+and never marking a high-risk event `SYNCED` without server confirmation).

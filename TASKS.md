@@ -198,11 +198,11 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
 
 ## Phase 12 — Android and Web UX — **PARTIAL (code + build present, not device-verified)**
 
-- `apps/web`: 18 screens, routing, i18n (`bn`/`bn-BD` + `en`), theme, offline layer
+- `apps/web`: 16 screens, routing, i18n (`bn`/`bn-BD` + `en`), theme, offline layer
   (IndexedDB outbox, sync worker, merge, cached list), `SyncBanner`, `InstallPrompt`,
   `public/manifest.webmanifest`, `public/sw.js`. **`vite build` succeeds** (351 kB JS /
   101 kB gzip) — captured. Types are exact-mirrored in `api/types*.ts`.
-- `apps/mobile`: Expo SDK 52 + React Native 0.76, ~50 screens across auth/onboarding/
+- `apps/mobile`: Expo SDK 52 + React Native 0.76, 41 screens across auth/onboarding/
   dashboard/catalog/sales/purchases/inventory/finance/farming/team/reports/settings/sync/ai,
   stack + bottom-tab navigators, SQLite offline store, `OfflineBanner`, `SyncStatusScreen`,
   `PermissionGate`, `PhotoPicker`, `AIModeBadge`, polyfills for `TextEncoder`/`crypto`,
@@ -250,8 +250,9 @@ exists but something material is unverified or missing · **NOT STARTED** = no c
   re-keys every id and remaps every declared FK plus known textual references, runs in one
   transaction, and reports what it did; a **daily partial JSON snapshot** job; and an
   **integrity/reconciliation report** with 9 independent derived checks.
-- **Not built:** printable/PDF reports, attachment export, and the CSV export is still not
-  audited (the JSON backup and restore are).
+- **Not built:** a server-side PDF generator (a print-ready HTML view **does** exist at
+  `GET /api/reports/print/:report`, and it is tested), attachment export, and the CSV export is
+  still not audited (the JSON backup and restore are).
 - Evidence: `restores a backup into a fresh workspace and reproduces the same books`;
   `refuses to restore a backup whose journal does not balance`;
   `passes on a healthy set of books and detects a broken ledger`.

@@ -43,6 +43,7 @@ parent (it is entered on the opposite side of its type's normal balance).
 | 2200 | Tax Payable | কর প্রদেয় | LIABILITY | CREDIT | |
 | 2300 | Accrued Expenses | সঞ্চিত খরচ | LIABILITY | CREDIT | |
 | 3000 | Owner Capital | মালিকের পুঁজি | EQUITY | CREDIT | |
+| 3050 | Opening Balance Equity | প্রারম্ভিক স্থিতি | EQUITY | CREDIT | |
 | 3100 | Partner Contributions | অংশীদারদের পুঁজি | EQUITY | CREDIT | |
 | 3200 | Retained Earnings | সঞ্চিত মুনাফা | EQUITY | CREDIT | |
 | 3300 | Partner Drawings | অংশীদারদের উত্তোলন | EQUITY | DEBIT | ✔ |
@@ -70,10 +71,16 @@ parent (it is entered on the opposite side of its type's normal balance).
 exposed through `isCashAccount()`. Cash-flow and cash-basis reports read *only* these three.
 
 Accounts that the chart defines but that the **current API does not post to** and no UI
-exposes (honest list): `1400`, `1500`, `1600`, `2100`, `2200`¹, `2300`, `3000`, `3200`,
-`5500`, `5600`, `5700`. They exist so the chart is complete and so future features
-(VAT, loans, depreciation, bad debt) have a home without a migration. ¹`2200` *is* posted
-by `buildSalePosting` when a sale line carries tax.
+exposes (honest list): `1500`, `1600`, `2100`, `2300`, `3000`, `3200`, `5500`, `5600`, `5700`.
+They exist so the chart is complete and so future features (VAT, loans, depreciation, bad
+debt, period closing) have a home without a migration.
+`3050 Opening Balance Equity` **is** posted — by opening cash/stock (`recordOpeningBalance`,
+`recordOpeningStock`). `1400` is posted when a purchase carries tax, and `2200` when a sale
+does.
+
+**Corrections:** a posted sale/purchase is corrected by **voiding** it
+(`POST /api/sales/:id/void`, `POST /api/purchases/:id/void`), which posts a `REVERSAL` entry
+and reversing stock movements — it never edits or deletes the original.
 
 ---
 
@@ -244,14 +251,52 @@ reversalOf = the original entry id
 The original entry is **never edited or deleted**. The reversal is a new, dated, referenced,
 balanced entry. Reversing a reversal throws `AccountingError('INVALID_ENTRY')`.
 
-### 3.13 Not implemented (be honest)
+### 3.13 Void a document — `voidDocument()` — `VOID` / `RETURNED`
 
-`buildIncomeExpensePosting` and the chart cover the *shape* of these, but there is **no**
-code path today for: sales returns (`4910`), purchase returns, bad debt (`5500`),
-depreciation (`5600`), loan principal/interest (`2100`/`5700`), opening balances
-(`finance.opening_balance` is a permission with no endpoint), or period closing to
-`3200 Retained Earnings`. The `sales`/`purchases` tables have no `status = RETURNED` flow.
-Adding them needs a documented policy per item — do **not** fake them with a journal entry.
+Correcting a posted sale or purchase **never** edits or deletes it. `voidDocument()`:
+
+1. finds the original journal entry by `source_type` + `source_id` and posts
+   `buildReversal()` — a new, dated, referenced, balanced mirror entry
+   (reference `<original>-REV`, `reversalOf = original id`);
+2. reverses every stock movement of that document with `reversalMovements()` — a `REVERSAL`
+   row with `reversal_of` set — so goods come back (or leave again);
+3. sets the document's `status` to `VOID` (sale) or `RETURNED` (purchase), bumps `revision`
+   and appends an audit record with the reason, and how many movements were reversed.
+
+It requires `sale.void` (or `purchase.return`) **and** a reason of ≥5 characters, and refuses a
+document that is already voided with `409 ALREADY_VOID`. `restock: false` skips step 2 (goods
+are not returned to stock) but still reverses the accounting.
+
+### 3.14 Opening balances — `buildOpeningBalancePosting()` — `OPENING_BALANCE`
+
+```
+Opening cash / bank / MFS:            Opening stock:
+Dr  1000/1010/1020  amount            Dr  1200  Inventory        quantity × unitCost
+    Cr  3050  Opening Balance Equity      Cr  3050  Opening Balance Equity
+
+Negative opening balance (overdraft):
+Dr  3050  Opening Balance Equity
+    Cr  1000/1010/1020  amount
+```
+
+**Opening balances are equity, not income.** Posting one must not change profit, and the API
+test `records opening cash and opening stock as equity, never as profit` asserts exactly that
+(revenue and net profit stay `0.00`, and the balance sheet still balances). Opening stock is a
+`source_type = 'OPENING'` inventory movement plus the matching entry, so the ledger and the
+stock balance agree from day one. Requires `finance.opening_balance`; audited as
+`opening_balance.set`.
+
+### 3.15 Not implemented (be honest)
+
+`buildIncomeExpensePosting` and the chart cover the *shape* of these, but there is **no** code
+path today for: a **sale return as a separate document** with its own lines (`4910`;
+voiding a sale exists and is the supported correction), **purchase returns as documents**,
+bad debt (`5500`), depreciation (`5600`), loan principal/interest (`2100`/`5700`), or period
+closing to `3200 Retained Earnings`. Return/void endpoints that **do** exist:
+`POST /api/sales/:id/void` and `POST /api/purchases/:id/void` (§3.13).
+
+Adding any of the missing ones needs a documented policy per item — do **not** fake them with a
+journal entry.
 
 ---
 
@@ -280,7 +325,8 @@ Two different questions, two different reports, both from the same ledger.
 - `otherIncome` = account `4100`
 - `netProfit = grossProfit + otherIncome − operatingExpenses`
 - Entries are filtered by `date` inside `[from, to]` inclusive, in the **business timezone**'s
-  calendar dates (`APP_TIMEZONE`, default `Asia/Dhaka`) — not UTC.
+  calendar dates (the business's `timezone`, default `Asia/Dhaka` via `DEFAULT_TIMEZONE`) —
+  not UTC.
 
 ### 4.2 `cashBasisOperatingResult()` — the documented definition
 
@@ -474,11 +520,15 @@ the policy first, then build it — do not approximate it with a journal entry.
 ## 7. Add-only history: reversal, never mutation
 
 - `journal_entries` and `journal_lines` are **append-only** in practice: no code path
-  `UPDATE`s or `DELETE`s a posted line or entry. The only mutation is
-  `sync_conflicts` bookkeeping and `production_cycles.status`.
+  `UPDATE`s or `DELETE`s a posted line or entry. A correction is a new entry.
+- The **only** mutations anywhere in the accounting path are controlled status fields:
+  `sales.status`/`purchases.status` → `VOID`/`RETURNED` (via §3.13) and
+  `production_cycles.status` → `CLOSED`; plus `sync_conflicts` resolution bookkeeping and the
+  `revision` counter on editable master data. None of them rewrites a debit, a credit, a
+  quantity or a stored cost.
 - `stock_movements` is an append-only ledger. There is no API to edit a movement; the only
-  sanctioned correction is an `ADJUSTMENT` movement (with a mandatory reason of ≥5
-  characters) or a `REVERSAL` pair, both audited.
+  sanctioned corrections are an `ADJUSTMENT` movement (mandatory reason of ≥5 characters), a
+  `TRANSFER_OUT`/`TRANSFER_IN` pair, or a `REVERSAL` movement — all audited.
 - Corrections therefore always leave a **visible trail**: you can always see both the
   original and the correction, and both are dated.
 - `deleted_at` soft-delete exists **only** on `products` (master data) and
@@ -487,7 +537,8 @@ the policy first, then build it — do not approximate it with a journal entry.
   conversations only. **Financial and stock records are never deleted.**
 - `ON DELETE CASCADE` is declared on parent→child FKs (e.g. `journal_lines.entry_id`,
   `sale_lines.sale_id`). In practice nothing deletes a business or a posted document, so
-  the cascade is a safety net, not a workflow.
+  the cascade is a safety net, not a workflow. The Postgres port goes further and gives the
+  posted tables **no UPDATE/DELETE policy at all**.
 
 ---
 
@@ -512,6 +563,16 @@ the policy first, then build it — do not approximate it with a journal entry.
   accounts only; cash-basis result counts only cash received against revenue/expense;
   **profit is not the same as cash**
 
-`apps/api/test/api.test.ts` proves the wiring: a purchase + sale + receipt + expense weeks
-apart produce `netRevenue 3300.00`, `cogs 2900.00`, `netProfit −600.00`, `payables 3800.00`,
-a balancing trial balance and a balancing balance sheet.
+`apps/api/test/api.test.ts` proves the wiring and the corrections:
+
+- a purchase + sale + receipt + expense weeks apart produce `netRevenue 3300.00`,
+  `cogs 2900.00`, `netProfit −600.00`, `payables 3800.00`, a balancing trial balance
+  (`totalDebit === totalCredit`) and a balancing balance sheet;
+- `voids a sale with an audited reversal instead of editing history` — the original entry is
+  untouched and a reversal is posted;
+- `records opening cash and opening stock as equity, never as profit` — profit stays `0.00`;
+- `treats partner capital as equity, not revenue` — P&L revenue and profit are `0.00`;
+- `moves stock between locations without changing quantity, value or profit`;
+- `passes on a healthy set of books and detects a broken ledger` — the integrity report's 9
+  checks, including "every journal entry balances", "no negative stock", "harvest released at
+  most the batch cost" and "shared costs allocated exactly once".

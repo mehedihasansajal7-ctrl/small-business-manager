@@ -45,7 +45,7 @@ or lose my data?** The answers to those are structural and do not go stale the w
 | **Local machine (this repo, `SBM_MODE=local`)** | unlimited everything; the DB is a file you own | your disk, your uptime | nothing breaks; your machine is the server, so if it is off, partners cannot sync |
 | **LAN hosting** (same PC, `HOST=0.0.0.0`) | partner phones on the same Wi-Fi | Wi-Fi range | out of range → offline mode (data is safe on the device, syncs when back) |
 | **Static web host** (Cloudflare Pages / Netlify / GitHub Pages / Vercel hobby) | hosting for a static Vite build | monthly build minutes, bandwidth, and per-build/platform limits — **numbers unverified** | site keeps serving already-deployed files; **new deploys** may be blocked until the window resets. No data loss (data is not in the static host) |
-| **Free Postgres tier** (e.g. a Supabase-style free project) | a small database + auth + RLS | project **pauses on inactivity**, storage/row/egress caps, and **RLS is mandatory** because an anon key is public | if it pauses: the shared API returns HTTP errors until you resume it in the dashboard; **nothing is deleted** by a pause, but you must not treat it as a backup. If you exceed a cap: writes may be rejected — **the failing side is the server, so devices keep their outbox and retry** |
+| **Free Postgres tier** (e.g. a Supabase-style free project) | a small database + auth + RLS | project **pauses on inactivity**, storage/row/egress caps, and **RLS is mandatory** because an anon key is public | the schema/RLS/RPCs for this are written and sit in `supabase/` — but **they have never been run**, and `apps/api` has no Postgres adapter yet, so a pause today cannot break anything because nothing is connected. Once wired up: a paused project returns errors until you resume it in the dashboard; **nothing is deleted** by a pause, but never treat it as a backup. If a cap is exceeded, writes are rejected and the devices keep their outbox and retry |
 | **Object storage free tier (for photos)** | a bit of file storage | storage + egress caps; some tiers require a card | uploads fail; **core transactions still work** because attachments are optional by design. A failed attachment never rolls back a posted transaction |
 | **AI — no provider (`AI_PROVIDER=none`)** | deterministic rules + curated official links | **none** | nothing. This mode cannot be exhausted, cannot bill, works offline |
 | **AI — local Ollama** | whatever your own hardware can run | your RAM/GPU; an 8B model wants ~8 GB | the request times out after `AI_TIMEOUT_MS` (20 s) and the API **returns the fallback answer with a limitation line** — never a 500 |
@@ -65,7 +65,9 @@ or lose my data?** The answers to those are structural and do not go stale the w
 2. **Hosted database paused or over quota.** Requests fail with an error; the devices keep
    their outbox (`PENDING`/`NEEDS_ATTENTION`) and retry with backoff. No local change is
    discarded, and no *partial* posting can survive because each event is applied inside one
-   transaction keyed by an idempotency key.
+   transaction keyed by an idempotency key. (Today this case is hypothetical: the Postgres
+   schema in `supabase/` has never been connected to `apps/api`, so nothing depends on a
+   hosted database yet.)
 3. **Static host over its limit.** The already-deployed site keeps serving; **new deploys**
    may be refused until the window resets. Business data is not in the static host, so there
    is nothing to lose.

@@ -7,24 +7,27 @@
 
 ## Status update
 
-*Written 2026-10-14. Keep this short — the living status is in [`TASKS.md`](./TASKS.md)
-and the measured evidence is in [`TESTING.md`](./TESTING.md).*
+*Written 2026-10-14, 13:47 local. Keep this short — the living status is in
+[`TASKS.md`](./TASKS.md) and the measured evidence is in [`TESTING.md`](./TESTING.md).*
 
-- **Delivered and machine-verified:** the pure domain package (`packages/domain`,
-  148 passing tests) and the zero-dependency API over embedded SQLite
-  (`apps/api`, 32 passing end-to-end tests), plus migrations v1–v6, double-entry posting,
-  offline sync with idempotency and conflict detection, the farming/costing engine and the
-  three-mode AI agent with an offline fallback.
-- **In progress / not verified at the time of writing:** the React web app (`apps/web`)
-  and the Expo Android app (`apps/mobile`) were being written concurrently with this
-  documentation pass. Their scaffold files exist; see `TASKS.md` for the exact,
-  timestamped state and `TESTING.md` for what was actually run.
-- **Not delivered:** `supabase/` (there is no such directory — the shared/Postgres port
-  is a *design target*, not code) and any Android APK (no JDK/Android SDK in this
-  environment).
-- **Nothing was deployed anywhere.** No cloud credentials were available, so
-  `DEPLOYMENT_FREE.md` is instructions, not a record of a live deployment.
-- **The zero-cost rule held:** no paid service, no paid API, no billing.
+- **Delivered and machine-verified (330 tests passing, exit 0):**
+  `packages/domain` (pure logic — 148 tests), `apps/api` (zero-runtime-dependency Node API over
+  embedded SQLite, migrations v1–v6 with 46 tables, 93 routes — 81 tests), `apps/web`
+  (Vite + React PWA — 63 tests, and `vite build` succeeds), and `supabase/`
+  (PostgreSQL migration + RLS + 9 posting RPCs — 38 static tests).
+  `npm run typecheck` passes in all four workspaces.
+- **Built but NOT verified on a device:** the web UI was never opened in a browser here and
+  the Expo Android app was never run on a device or emulator. **No Android APK was produced**
+  (no JDK/Android SDK in this environment).
+- **NOT verified against a live database:** `supabase/migrations` and the 148 RLS policies have
+  never been executed against a real PostgreSQL — the tests read the SQL and assert structure.
+- **Nothing was deployed anywhere,** and no free tier was checked. No cloud credentials were
+  available, so `DEPLOYMENT_FREE.md` is instructions, not a record of a live deployment.
+- **Two known security findings are open** (`SECURITY.md` §11.1–11.2): unfiltered cost data via
+  `GET /api/sync/pull`, and `member.manage` allowing an admin to self-grant
+  `business.transfer_ownership`.
+- **The zero-cost rule held:** no paid service, no paid API, no billing, no mandatory
+  dependency.
 
 ---
 

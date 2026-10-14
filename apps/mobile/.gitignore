@@ -4,6 +4,8 @@ node_modules/
 dist/
 web-build/
 expo-env.d.ts
+# `npx expo export` scratch output used for a bundle smoke test
+.expo-export-check/
 *.jks
 *.keystore
 *.p8
@@ -12,6 +14,10 @@ expo-env.d.ts
 *.mobileprovision
 *.orig.*
 .metro-health-check*
+
+# Generated release-signing config (never commit the keystore or its passwords)
+android/gradle.properties
+android/app/*.keystore
 
 # Native projects are generated, never committed (prebuild output)
 /android

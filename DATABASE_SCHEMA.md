@@ -6,10 +6,13 @@ Source of truth: `apps/api/src/db.ts` → `MIGRATIONS` (versions 1–6) and
 `ROLLBACK` on failure. `PRAGMA foreign_keys = ON` is set on every connection.
 Verified live: `GET /api/health` returns `"schemaVersion":6`.
 
-> **The `supabase/` directory does not exist.** The master prompt asks for a Postgres
-> port under `supabase/migrations` + `supabase/seed.sql`; that work has **not been done**.
-> §14 describes what the port must preserve and is a plan, not code. Do not look for
-> `supabase/migrations` files — there are none.
+> **The Postgres port exists in `supabase/` — and it has never been run against a live
+> PostgreSQL.** `supabase/migrations/0001…0007` (7 files) + `supabase/functions/0000…0180`
+> (10 files) + `supabase/seed.sql` are a real, same-shaped port of the schema below, with
+> **148 `CREATE POLICY` statements** and 9 transactional posting RPCs. `supabase/tests/`
+> (38 tests) asserts the structure by **reading the SQL**; there is no database server in this
+> environment, so the migrations are **unexecuted**. See §14 for the exact correspondence and
+> `supabase/README.md` for how to apply and verify it.
 
 ---
 
@@ -571,11 +574,13 @@ two concurrent callers. The counter is keyed per business **and per day**
   `(business_id, item_id, occurred_at)` on stock,
   `(business_id, status)` on cycles/conflicts,
   `(business_id, source_type, source_id)` on stock and journal.
-- ⚠️ **RLS is NOT implemented** — SQLite has no row-level security, and the Postgres port
-  that would carry `RLS` policies (`supabase/migrations`) does not exist yet. The current
-  isolation guarantee is *application-level* (repository + caller), plus the process being
-  single-tenant-per-deployment in local mode. See SECURITY.md §3 and §10 for what that
-  does and does not buy.
+- ⚠️ **The embedded SQLite store has no row-level security.** SQLite cannot; the isolation
+  guarantee in the running API is *application-level* (`Repository` + a resolved `Caller`
+  whose membership is checked on every request), plus the process being
+  single-tenant-per-deployment in local mode. The **Postgres port in `supabase/` does** carry
+  RLS (148 policies, `enable` + `force` on every tenant table), but it has never been executed
+  against a live server, and `apps/api` does not use it. See `SECURITY.md` §3 and §11 for what
+  the application-level guarantee does and does not buy.
 
 ## 9. Soft delete vs reversal — the explicit policy
 
@@ -598,36 +603,94 @@ code deletes a business or a posted document**, so no cascade fires in normal op
 
 | Gap | Impact |
 |---|---|
-| No `supabase/` migrations or `seed.sql` | shared/cloud mode is DESIGN-ONLY; `SBM_MODE=shared` validates config but there is no Postgres path to store anything |
-| No RLS policies anywhere | if this schema is ever put behind a multi-tenant Postgres without adding RLS, the DB would rely entirely on app code |
-| `devices`, `product_categories`, `financial_accounts` declared but unused | dead tables; either wire them up or drop them |
-| `customers.opening_balance` / `suppliers.opening_balance` stored but not in the balance derivations | an opening balance will not appear in receivables/payables |
-| `farms.latitude/longitude` unused | no map, no geo features |
+| The Postgres port has **never been executed** against a live PostgreSQL | RLS and the 9 RPCs are structurally asserted only; a valid-looking policy can still be semantically wrong |
+| `apps/api` has **no Postgres adapter** | `SBM_MODE=shared` validates config but the Node API still writes to SQLite; `supabase/` is reachable only by talking to its RPCs directly |
+| `devices`, `product_categories`, `financial_accounts` declared but unused by the API | dead tables in SQLite (the Postgres port uses them more fully); either wire them up or drop them |
+| `customers.opening_balance` / `suppliers.opening_balance` stored but not in the balance derivations | an opening *party* balance will not appear in receivables/payables (business-level opening balances use `3050 Opening Balance Equity` and **are** implemented) |
+| `farms.latitude/longitude` unused | no map, no geo features, no location permission requested |
 | `businesses.settings` JSON column superseded by `business_settings` | two places could hold settings; only `business_settings` is read |
-| `attachments` has no delete/verify endpoint and no virus/content-type validation beyond what the upload path does | metadata accumulates |
+| `attachments` has no delete/retention, and MIME is not magic-byte verified | metadata accumulates; see `SECURITY.md` §7. A permission-checked **content download** endpoint does exist |
 | No `mortality_losses` index | fine at small scale, slow if a cycle has tens of thousands of loss rows |
 | `journal_lines.partner_id` is a display name, not an FK | partner reporting is by name; a renamed member splits history |
+| `GET /api/sync/pull` returns cost columns to every member | see `SECURITY.md` §11.1 — a data-exposure gap, not a schema one, but the schema is what makes the columns available |
 
 ---
 
-## 11. Postgres port (planned, not built)
+## 11. Postgres port — `supabase/` (code exists; never executed)
 
-Nothing in `supabase/` exists. If you build it, these mappings **must** hold, or the
-correctness guarantees documented above are lost:
+The port lives in `supabase/` and is the same domain model, translated rather than redesigned.
+Table and column names match the SQLite names, with these deliberate upgrades:
 
-| SQLite here | Postgres must be |
-|---|---|
-| `TEXT` decimals (`'4500.00'`) | `numeric(20,6)` — **exact**, never `double precision`/`real` |
-| `INTEGER` 0/1 booleans | `boolean` |
-| ISO `TEXT` dates | `date`; ISO `TEXT` timestamps | `timestamptz` (store UTC) |
-| JSON `TEXT` | `jsonb` |
-| `PRAGMA user_version` migration tracking | a `schema_migrations (version, name, applied_at)` table |
-| `event_id UNIQUE` / `idempotency_key UNIQUE` | keep both unique constraints — they are the anti-duplicate guarantee |
-| `UNIQUE (business_id, reference)` | keep |
-| `nextReference()` upsert with `RETURNING` | `INSERT … ON CONFLICT … DO UPDATE … RETURNING` (identical semantics) |
-| app-level tenant filter | app-level filter **plus RLS policies on every tenant table**, with `business_id` matched against a membership check |
-| domain `Decimal` (bigint-scaled) | unchanged — only the storage type changes |
+| SQLite here | Postgres there (`supabase/migrations`) | Why |
+|---|---|---|
+| `TEXT` decimals (`'4500.00'`) | `numeric(20,6)` — **exact** | never `float`/`real`/`double precision`; asserted by a test |
+| `INTEGER` 0/1 booleans | `boolean` | honest types |
+| JSON `TEXT` | `jsonb` | indexable and type-checked |
+| ISO `TEXT` dates / timestamps | `date` / `timestamptz` | range queries and real time semantics |
+| `TEXT` uuid ids | `uuid` + `gen_random_uuid()` | smaller, validated |
+| `PRAGMA user_version` tracking | filename order (`0001…0007`) | the standard migration convention |
+| app-level tenant filter | app filter **plus RLS on every tenant table** | `enable` **and** `force row level security`, 148 policies |
+| `nextReference()` upsert | `app.next_reference(...)` | same atomic-counter semantics |
+| domain `Decimal` (bigint-scaled) | **unchanged** | only the storage type changes |
 
-The `Repository` class is the seam: it is the only place that holds SQL. A Postgres
-implementation of the same methods, plus an adapter, is the intended boundary — but that
-code does not exist today.
+Layout:
+
+```
+supabase/
+  migrations/0001_extensions.sql          pgcrypto, the `app` schema, current_profile_id()
+  migrations/0002_identity_tenancy.sql    profiles, businesses, business_members, invites,
+                                          devices, audit_logs, business_settings,
+                                          number_sequences, role_permissions (seeded from
+                                          packages/domain)
+  migrations/0003_catalog_inventory.sql   units, locations, product_categories, products,
+                                          unit_conversions, customers, suppliers, stock_lots,
+                                          stock_movements
+  migrations/0004_commerce_finance.sql    accounts (chart of accounts), financial_accounts,
+                                          purchases/lines, sales/lines, payments,
+                                          account_transfers, income_expenses, partner_capital,
+                                          journal_entries/lines, attachments
+  migrations/0005_farming.sql             farms, farm_units, production_cycles, farming_events,
+                                          input_consumptions, production_outputs, harvests,
+                                          mortality_losses, cost_sources, cost_allocations,
+                                          output_lots, observations, cycle_cost_ledger (view)
+  migrations/0006_sync_ai_attachments.sql sync_events, processed_events, sync_conflicts, ai_*
+  migrations/0007_policies_indexes.sql    RLS helpers, 148 policies, integrity guards,
+                                          audit triggers, privileges, indexes
+  functions/0000_helpers.sql              permission / actor / idempotency / stock / cost helpers
+  functions/0100_post_sale.sql            post_sale(business, payload, idempotency_key)
+  functions/0110_receive_purchase.sql     receive_purchase(...)
+  functions/0120_move_stock.sql           move_stock(...)
+  functions/0130_post_harvest.sql         post_harvest(...)
+  functions/0140_allocate_cost.sql        allocate_cost(...)
+  functions/0150_post_payment.sql         post_payment(...)
+  functions/0160_create_journal_entry.sql create_journal_entry(...)
+  functions/0170_close_cycle.sql          close_cycle(...)
+  functions/0180_void_document.sql        void_document(...)   (void, never delete)
+  seed.sql                                idempotent demo dataset (fake data, no secrets)
+  tests/{schema,policies}.test.ts         38 static assertions over the SQL
+```
+
+Postgres-specific guarantees the port adds:
+
+- **Append-only by policy.** `stock_movements`, `journal_entries`, `journal_lines`,
+  `processed_events`, `payments`, `income_expenses`, `account_transfers`, `partner_capital`,
+  `harvests`, `sale_lines`, `purchase_lines`, `mortality_losses`, `observations` and
+  `cost_allocations` have **no UPDATE/DELETE policy** — RLS denies those operations by default.
+  `audit_logs` is SELECT+INSERT only.
+- **Two independent double-entry guards.** `app.insert_journal_entry` refuses an unbalanced
+  entry, and a deferrable constraint trigger re-checks every entry at commit.
+- **Shared costs must add up.** A deferrable trigger proves
+  `sum(cost_allocations.amount) = cost_sources.amount`; `allocate_cost` floors each share and
+  gives the rounding remainder to the last weighted target.
+- **Owner protection.** A trigger refuses to demote/deactivate/remove the last owner, and
+  another requires `business.transfer_ownership` for any change touching an owner role.
+- **`anon` gets nothing.** Grants are revoked from `anon`, granted to `authenticated` (narrowed
+  by RLS) and to `service_role` (trusted jobs).
+- `security definer` helpers have a **pinned `search_path`** and are reassigned to a
+  bypass-RLS role, or PostgreSQL raises "infinite recursion detected in policy" — the migration
+  documents this and `supabase/README.md` gives the manual fallback.
+
+⚠️ **Read this before trusting it:** there is no PostgreSQL server in this environment, so none
+of the above has been executed. Apply it to a real project and run the §2.3 verification
+queries in `supabase/README.md` (including a second-tenant isolation test) before relying on
+RLS. Known unresolved items are listed in `supabase/README.md` ("Known gaps").

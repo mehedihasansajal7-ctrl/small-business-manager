@@ -9,6 +9,7 @@ import {
   formatMoney,
   money,
 } from '@sbm/domain';
+import type { Permission } from '@sbm/domain';
 import type { AIAgent } from './ai.js';
 import { SESSION_COOKIE_NAME, type AuthService, type UserRow } from './auth.js';
 import type { AppConfig } from './config.js';
@@ -734,23 +735,41 @@ export function buildRouter(deps: RouteDeps): Router {
 
   router.get('/api/reports/export/:table', (ctx) => {
     const caller = requireCaller(ctx);
-    repo.assertPermission(caller, 'report.export');
     const table = ctx.params.table as string;
-    const allowed: Record<string, string> = {
-      sales: 'SELECT * FROM sales WHERE business_id = ?',
-      purchases: 'SELECT * FROM purchases WHERE business_id = ?',
-      stock_movements: 'SELECT * FROM stock_movements WHERE business_id = ?',
-      journal_lines: 'SELECT * FROM journal_lines WHERE business_id = ?',
-      products: 'SELECT * FROM products WHERE business_id = ?',
-      customers: 'SELECT * FROM customers WHERE business_id = ?',
-      suppliers: 'SELECT * FROM suppliers WHERE business_id = ?',
-      production_cycles: 'SELECT * FROM production_cycles WHERE business_id = ?',
-      harvests: 'SELECT * FROM harvests WHERE business_id = ?',
-      cost_sources: 'SELECT * FROM cost_sources WHERE business_id = ?',
+    // Each export names the permission it needs and the columns a role without
+    // cost visibility must never receive. A bare `report.export` is NOT enough
+    // for cost or ledger data.
+    const exports: Record<string, { sql: string; permission: Permission; hidden: readonly string[]; hiddenPermission?: Permission }> = {
+      sales: { sql: 'SELECT * FROM sales WHERE business_id = ?', permission: 'sale.view', hidden: ['cogs'], hiddenPermission: 'financial_reports.view' },
+      purchases: { sql: 'SELECT * FROM purchases WHERE business_id = ?', permission: 'purchase.view', hidden: ['subtotal', 'tax'], hiddenPermission: 'purchase.cost.view' },
+      stock_movements: { sql: 'SELECT * FROM stock_movements WHERE business_id = ?', permission: 'inventory.view', hidden: ['unit_cost'], hiddenPermission: 'purchase.cost.view' },
+      products: { sql: 'SELECT * FROM products WHERE business_id = ?', permission: 'product.view', hidden: ['purchase_price', 'tax_rate'], hiddenPermission: 'purchase.cost.view' },
+      customers: { sql: 'SELECT * FROM customers WHERE business_id = ?', permission: 'customer.view', hidden: [] },
+      suppliers: { sql: 'SELECT * FROM suppliers WHERE business_id = ?', permission: 'supplier.view', hidden: [] },
+      production_cycles: { sql: 'SELECT * FROM production_cycles WHERE business_id = ?', permission: 'farming.view', hidden: [] },
+      // Ledger and cost exports require the matching sensitivity permission.
+      journal_lines: { sql: 'SELECT * FROM journal_lines WHERE business_id = ?', permission: 'financial_reports.view', hidden: [] },
+      journal_entries: { sql: 'SELECT * FROM journal_entries WHERE business_id = ?', permission: 'financial_reports.view', hidden: [] },
+      harvests: { sql: 'SELECT * FROM harvests WHERE business_id = ?', permission: 'farming.cost.view', hidden: [] },
+      cost_sources: { sql: 'SELECT * FROM cost_sources WHERE business_id = ?', permission: 'farming.cost.view', hidden: [] },
+      cost_allocations: { sql: 'SELECT * FROM cost_allocations WHERE business_id = ?', permission: 'farming.cost.view', hidden: [] },
+      payments: { sql: 'SELECT * FROM payments WHERE business_id = ?', permission: 'finance.view', hidden: [] },
+      income_expenses: { sql: 'SELECT * FROM income_expenses WHERE business_id = ?', permission: 'finance.view', hidden: [] },
+      account_transfers: { sql: 'SELECT * FROM account_transfers WHERE business_id = ?', permission: 'finance.view', hidden: [] },
+      partner_capital: { sql: 'SELECT * FROM partner_capital WHERE business_id = ?', permission: 'partner_capital.view', hidden: [] },
     };
-    const sql = allowed[table];
-    if (!sql) throw HttpError.badRequest('VALIDATION', `Unsupported export table. Allowed: ${Object.keys(allowed).join(', ')}`);
-    const rows = repo.db.all<Record<string, unknown>>(sql, [caller.business.id]);
+    const spec = exports[table];
+    if (!spec) throw HttpError.badRequest('VALIDATION', `Unsupported export table. Allowed: ${Object.keys(exports).join(', ')}`);
+    repo.assertPermission(caller, 'report.export');
+    repo.assertPermission(caller, spec.permission);
+    const permissions = repo.permissions(caller);
+    const hideCost = spec.hidden.length > 0 && !permissions.has(spec.hiddenPermission ?? 'purchase.cost.view');
+    const rows = repo.db.all<Record<string, unknown>>(spec.sql, [caller.business.id]).map((row) => {
+      if (!hideCost) return row;
+      const clone = { ...row };
+      for (const column of spec.hidden) delete clone[column];
+      return clone;
+    });
     const csv = toCsv(rows);
     ctx.res.writeHead(200, {
       'content-type': 'text/csv; charset=utf-8',

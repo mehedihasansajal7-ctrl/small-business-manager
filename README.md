@@ -199,15 +199,15 @@ Verified means: a test, a build or a captured command output proves it. See
 | Tenancy: business workspace, invites, membership, audit log | **DONE** | invite entropy/expiry/single-use tests; isolation tests |
 | Offline sync — **server** (idempotency, revisions, conflicts, backoff) | **DONE** | 20 domain + sync/security API tests |
 | Offline sync — **web + Android clients** (durable outbox, worker) | **PARTIAL** | code exists and the web outbox has 17 tests incl. a protocol integration test; **no restart-kill e2e was run by the author** |
-| Web app (18 screens, routing, i18n, offline, PWA manifest + service worker) | **BUILDS** | `vite build` → `dist/` (351 kB JS / 101 kB gzip); **never opened in a browser here** |
-| Android app (Expo, ~50 screens, SQLite offline store) | **CODE PRESENT** | typechecks as part of the repo; ⚠️ **no APK built, never run on a device or emulator** |
+| Web app (16 screens, routing, i18n, offline, PWA manifest + service worker) | **BUILDS** | `vite build` → `dist/` (351 kB JS / 101 kB gzip); **never opened in a browser here** |
+| Android app (Expo, 41 screens, SQLite offline store) | **CODE PRESENT** | typechecks as part of the repo; ⚠️ **no APK built, never run on a device or emulator** |
 | Postgres/Supabase port with RLS on every tenant table | **CODE + STATIC TESTS** | 7 migrations, 148 `CREATE POLICY` statements, 9 posting RPCs, 38 static tests; ⚠️ **never executed against a live Postgres** |
 | AI agent: 3 modes, offline fallback, curated official links, permission-scoped context | **DONE** | API tests for fallback labelling, curated links, cost redaction, permission denial |
 | AI: live search provider, prompt-injection test, dose/PHI refusal test | **NOT BUILT / NOT TESTED** | guardrails are prompt-level; see `AI_AGENT_DESIGN.md` §11.2 |
 | Backup (JSON) **and restore** | **DONE** | restore is owner-only, empty-workspace-only, re-keys ids, refuses an unbalanced backup |
 | Return/void of a posted document | **DONE** | `sale.void` / purchase return via audited reversal; posted rows are never edited |
 | Reports: trial balance, P&L, balance sheet, cash flow, stock valuation, integrity | **DONE** | API tests + integrity report is a real reconciliation self-audit |
-| Reports: printable/PDF output | **NOT BUILT** | CSV export only |
+| Reports: printable output | **PARTIAL** | `GET /api/reports/print/:report` returns print-ready HTML (tested); there is **no** server-side PDF generator — use the browser's print-to-PDF |
 | Bad debt, depreciation, loans/interest, period close to retained earnings | **NOT BUILT** | accounts exist; no policy, no endpoint — deliberately not faked |
 | Payroll | **NOT BUILT** | `payroll.view`/`manage` permissions exist; no feature |
 | CI configuration | **NOT BUILT** | local verification only (permitted by the spec) |
@@ -273,7 +273,8 @@ Read these before trusting the app with money.
 6. **Not formal accounting.** No tax, VAT, BFRS/IFRS/IAS compliance, no statutory returns.
    It is a management ledger. See [`ACCOUNTING_RULES.md`](./ACCOUNTING_RULES.md).
 7. **Several features from the specification are deliberately absent** and are listed as
-   such rather than stubbed: payroll, printable/PDF reports, bad debt, depreciation, loans,
+   such rather than stubbed: payroll, a server-side PDF generator (a print-ready HTML view
+   does exist), bad debt, depreciation, loans,
    period closing, sales/purchase *returns as separate documents* (voiding exists), breeding/
    biological-asset valuation, scheduled-operation alerts, and AI conversation export.
 8. **No CI, no dependency/SCA scanning, no penetration test, no accessibility audit.**

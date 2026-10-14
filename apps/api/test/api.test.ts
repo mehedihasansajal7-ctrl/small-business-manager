@@ -1124,6 +1124,167 @@ describe('alerts', () => {
   });
 });
 
+describe('cost-visibility leaks (regression tests)', () => {
+  /** Builds an owner + a cashier + a manager over the same books. */
+  async function shopWithRoles(prefix: string) {
+    const owner = await setupBusiness(`${prefix}.owner@test.sbm`);
+    await owner.client.post('/api/purchases', { documentDate: '2026-04-01', supplierId: owner.supplierId, paid: '5800', lines: [{ productId: owner.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    await owner.client.post('/api/sales', { documentDate: '2026-04-05', customerId: owner.customerId, cashReceived: '0', lines: [{ productId: owner.productId, quantity: '10', unit: 'kg', unitPrice: '68' }] });
+
+    async function join(role: string, email: string) {
+      const invite = await owner.client.post<{ code: string }>('/api/members/invites', { role, email });
+      const c = client();
+      await c.post('/api/auth/register', { email, password: 'password123', displayName: role });
+      await c.post('/api/invites/accept', { code: invite.body.code });
+      return c;
+    }
+    return { owner, cashier: await join('cashier', `${prefix}.cashier@test.sbm`), manager: await join('manager', `${prefix}.manager@test.sbm`) };
+  }
+
+  it('never ships unit costs, COGS or the journal to a role that may not see them', async () => {
+    const { cashier, owner } = await shopWithRoles('leak');
+
+    const cashierPull = await cashier.get<Record<string, any>>('/api/sync/pull?since=1970-01-01T00:00:00.000Z');
+    expect(cashierPull.status).toBe(200);
+    expect(cashierPull.body.costVisibility).toEqual({ unitCosts: false, cogsAndMargins: false, financialReports: false, farmingCosts: false, partnerCapital: false });
+
+    // Cost columns are gone, not merely hidden in the UI.
+    for (const product of cashierPull.body.products as Record<string, unknown>[]) {
+      expect(product).not.toHaveProperty('purchase_price');
+      expect(product).not.toHaveProperty('tax_rate');
+    }
+    for (const sale of cashierPull.body.sales as Record<string, unknown>[]) expect(sale).not.toHaveProperty('cogs');
+    for (const line of cashierPull.body.saleLines as Record<string, unknown>[]) expect(line).not.toHaveProperty('unit_cost');
+    for (const movement of cashierPull.body.stockMovements as Record<string, unknown>[]) expect(movement).not.toHaveProperty('unit_cost');
+    for (const line of cashierPull.body.purchaseLines as Record<string, unknown>[]) expect(line).not.toHaveProperty('unit_cost');
+    for (const purchase of cashierPull.body.purchases as Record<string, unknown>[]) {
+      expect(purchase).not.toHaveProperty('subtotal');
+      expect(purchase).not.toHaveProperty('tax');
+    }
+    // The whole journal is withheld.
+    expect(cashierPull.body.journalEntries).toEqual([]);
+    expect(cashierPull.body.journalLines).toEqual([]);
+    expect(cashierPull.body.costAllocations).toEqual([]);
+    // And no raw figure leaks anywhere in the payload.
+    expect(JSON.stringify(cashierPull.body)).not.toContain('58.00');
+
+    // The owner still receives everything.
+    const ownerPull = await owner.client.get<Record<string, any>>('/api/sync/pull?since=1970-01-01T00:00:00.000Z');
+    expect(ownerPull.body.costVisibility.unitCosts).toBe(true);
+    expect((ownerPull.body.products as Record<string, unknown>[])[0]).toHaveProperty('purchase_price');
+    expect(ownerPull.body.journalLines.length).toBeGreaterThan(0);
+    expect(JSON.stringify(ownerPull.body)).toContain('58.00');
+  });
+
+  it('gives a manager purchase costs but still withholds margins and the journal', async () => {
+    const { manager } = await shopWithRoles('leakmgr');
+    const pull = await manager.get<Record<string, any>>('/api/sync/pull?since=1970-01-01T00:00:00.000Z');
+    expect(pull.body.costVisibility.unitCosts).toBe(true);
+    expect(pull.body.costVisibility.cogsAndMargins).toBe(false);
+    expect((pull.body.stockMovements as Record<string, unknown>[])[0]).toHaveProperty('unit_cost');
+    // A manager may not read the ledger or margins, which expose partner capital
+    // and profitability.
+    expect(pull.body.journalEntries).toEqual([]);
+    expect(pull.body.journalLines).toEqual([]);
+    for (const sale of pull.body.sales as Record<string, unknown>[]) expect(sale).not.toHaveProperty('cogs');
+  });
+
+  it('refuses a ledger CSV export without the sensitivity permission, and trims cost columns otherwise', async () => {
+    const { owner, cashier, manager } = await shopWithRoles('leakexp');
+
+    // The ledger export needs financial_reports.view, which a manager lacks.
+    expect((await manager.get('/api/reports/export/journal_lines')).status).toBe(403);
+    expect((await cashier.get('/api/reports/export/journal_lines')).status).toBe(403);
+    expect((await owner.client.get('/api/reports/export/journal_lines')).status).toBe(200);
+
+    // A cashier has no report.export at all.
+    expect((await cashier.get('/api/reports/export/sales')).status).toBe(403);
+
+    // A manager may export sales but must not receive COGS.
+    const managerCsv = await manager.get<string>('/api/reports/export/sales');
+    expect(managerCsv.status).toBe(200);
+    expect(String(managerCsv.body)).toContain('net');
+    expect(String(managerCsv.body)).not.toContain('cogs');
+
+    const ownerCsv = await owner.client.get<string>('/api/reports/export/sales');
+    expect(String(ownerCsv.body)).toContain('cogs');
+
+    // Partner capital is owner-only.
+    expect((await manager.get('/api/reports/export/partner_capital')).status).toBe(403);
+    expect((await owner.client.get('/api/reports/export/partner_capital')).status).toBe(200);
+  });
+});
+
+describe('member permission escalation guardrails', () => {
+  async function businessWithAdmin(prefix: string) {
+    const owner = await setupBusiness(`${prefix}.owner@test.sbm`);
+    const invite = await owner.client.post<{ code: string }>('/api/members/invites', { role: 'admin', email: `${prefix}.admin@test.sbm` });
+    const admin = client();
+    await admin.post('/api/auth/register', { email: `${prefix}.admin@test.sbm`, password: 'password123', displayName: 'Admin' });
+    await admin.post('/api/invites/accept', { code: invite.body.code });
+    const members = await owner.client.get<{ id: string; email: string; role: string }[]>('/api/members');
+    return { owner, admin, members, adminMemberId: members.body.find((m) => m.role === 'admin')?.id as string, ownerMemberId: members.body.find((m) => m.role === 'owner')?.id as string };
+  }
+
+  it('stops an admin from granting itself ownership transfer', async () => {
+    const { admin, adminMemberId, owner } = await businessWithAdmin('esc');
+    const escalation = await admin.patch<{ error: { code: string; message: string } }>(`/api/members/${adminMemberId}`, { grants: ['business.transfer_ownership'] });
+    expect(escalation.status).toBe(403);
+    expect(escalation.body.error.message).toMatch(/Only the owner/i);
+
+    const stillAdmin = (await owner.client.get<{ id: string; role: string; grants: string[] }[]>('/api/members')).body.find((m) => m.id === adminMemberId);
+    expect(stillAdmin?.grants).toEqual([]);
+  });
+
+  it('stops an admin from denying an owner permission or editing another admin', async () => {
+    const { owner, admin, ownerMemberId, adminMemberId, members } = await businessWithAdmin('esc2');
+
+    // Denying the owner's permissions is refused.
+    const denyOwner = await admin.patch(`/api/members/${ownerMemberId}`, { denials: ['financial_reports.view'] });
+    expect(denyOwner.status).toBe(403);
+
+    // A second admin cannot be edited by another admin.
+    const invite2 = await owner.client.post<{ code: string }>('/api/members/invites', { role: 'admin', email: 'esc2.admin2@test.sbm' });
+    const admin2 = client();
+    await admin2.post('/api/auth/register', { email: 'esc2.admin2@test.sbm', password: 'password123', displayName: 'Admin Two' });
+    await admin2.post('/api/invites/accept', { code: invite2.body.code });
+    const after = await owner.client.get<{ id: string; email: string }[]>('/api/members');
+    const admin2Id = after.body.find((m) => m.email === 'esc2.admin2@test.sbm')?.id as string;
+    expect(admin2Id).toBeTruthy();
+    expect((await admin.patch(`/api/members/${admin2Id}`, { role: 'viewer' })).status).toBe(403);
+
+    // An admin CAN still manage lower roles.
+    const cashierInvite = await owner.client.post<{ code: string }>('/api/members/invites', { role: 'cashier', email: 'esc2.cashier@test.sbm' });
+    const cashier = client();
+    await cashier.post('/api/auth/register', { email: 'esc2.cashier@test.sbm', password: 'password123', displayName: 'Cashier' });
+    await cashier.post('/api/invites/accept', { code: cashierInvite.body.code });
+    const cashierId = (await owner.client.get<{ id: string; email: string }[]>('/api/members')).body.find((m) => m.email === 'esc2.cashier@test.sbm')?.id as string;
+    expect((await admin.patch(`/api/members/${cashierId}`, { role: 'viewer' })).status).toBe(200);
+    expect(cashierId).toBeTruthy();
+    expect(ownerMemberId).toBeTruthy();
+    expect(members).toBeTruthy();
+  });
+
+  it('lets the owner set overrides, rejects self-editing and unknown permissions', async () => {
+    const { owner, ownerMemberId } = await businessWithAdmin('esc3');
+    const invite = await owner.client.post<{ code: string }>('/api/members/invites', { role: 'viewer', email: 'esc3.viewer@test.sbm' });
+    const viewer = client();
+    await viewer.post('/api/auth/register', { email: 'esc3.viewer@test.sbm', password: 'password123', displayName: 'Viewer' });
+    await viewer.post('/api/invites/accept', { code: invite.body.code });
+    const viewerId = (await owner.client.get<{ id: string; email: string }[]>('/api/members')).body.find((m) => m.email === 'esc3.viewer@test.sbm')?.id as string;
+
+    expect((await owner.client.patch(`/api/members/${viewerId}`, { grants: ['sale.create'] })).status).toBe(200);
+    expect((await viewer.post('/api/sales', { documentDate: '2026-04-01', cashReceived: '0', lines: [] })).status).not.toBe(403);
+
+    // Unknown permission names are rejected, not silently stored.
+    expect((await owner.client.patch(`/api/members/${viewerId}`, { grants: ['become.superuser'] })).status).toBe(400);
+    // The owner cannot edit their own overrides.
+    expect((await owner.client.patch(`/api/members/${ownerMemberId}`, { grants: ['sale.create'] })).status).toBe(400);
+    // An empty patch is refused rather than silently succeeding.
+    expect((await owner.client.patch(`/api/members/${viewerId}`, {})).status).toBe(400);
+  });
+});
+
 describe('validation and limits', () => {
   it('rejects malformed input instead of storing it', async () => {
     const w = await setupBusiness('valid@test.sbm');
