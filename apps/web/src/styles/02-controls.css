@@ -239,3 +239,16 @@
   color: var(--primary-ink);
   font-weight: 600;
 }
+
+/*
+ * Language switch on the sign-in screen: small and out of the way, but always
+ * reachable BEFORE logging in (Settings is behind the login).
+ */
+.tabs--lang {
+  margin-top: 10px;
+}
+
+.tabs--lang .tab {
+  padding: 4px 10px;
+  font-size: 0.85em;
+}

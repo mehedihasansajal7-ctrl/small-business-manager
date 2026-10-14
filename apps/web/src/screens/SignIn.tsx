@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { ApiError } from '../api/client';
 import { useApp, useT } from '../state/AppContext';
+import { LOCALES } from '../i18n';
 import { Button, Card, Notice, TextInput } from '../components/ui';
 
 /** Sign in, register, or join an existing business with an invite code. */
 export function SignInScreen() {
-  const { signIn, register, acceptInvite, me, notify } = useApp();
-  const { t } = useT();
+  const { signIn, register, acceptInvite, me, notify, setLocale } = useApp();
+  const { t, locale } = useT();
   const [tab, setTab] = useState<'signIn' | 'register' | 'join'>('signIn');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -32,6 +33,25 @@ export function SignInScreen() {
         <header className="auth__head">
           <h1>{t('app.name')}</h1>
           <p>{t('app.tagline')}</p>
+          {/*
+            The language switch lives here, before sign-in, and not only in
+            Settings: someone who cannot read the current language could never
+            find the setting that changes it, because Settings is behind login.
+          */}
+          <div className="tabs tabs--lang" role="group" aria-label={t('common.language')}>
+            {LOCALES.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                lang={option.id === 'en' ? 'en' : 'bn'}
+                aria-pressed={locale === option.id}
+                className={`tab${locale === option.id ? ' tab--active' : ''}`}
+                onClick={() => setLocale(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </header>
 
         <div className="tabs" role="tablist">
