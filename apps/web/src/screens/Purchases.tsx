@@ -6,7 +6,7 @@ import { purchases as purchaseApi } from '../api/endpointsFinance';
 import { computePurchaseTotals, purchasePayload } from '../api/documentMath';
 import { canViewCost, hasPermission } from '../api/permissions';
 import { cachedList } from '../offline/cachedList';
-import { deviceId, newLocalId, saveLocally } from '../offline/localStorage';
+import { deviceId, isLocalId, newLocalId, saveLocally } from '../offline/localStorage';
 import { useOnline } from '../offline/useSync';
 import { AsyncState, Restricted } from '../components/States';
 import { DataTable, type Column } from '../components/DataTable';
