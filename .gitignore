@@ -1,0 +1,36 @@
+node_modules/
+dist/
+build/
+.next/
+.expo/
+coverage/
+*.tsbuildinfo
+
+# runtime data / local databases
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# secrets / env
+.env
+.env.*
+!.env.example
+
+# mobile build output
+apps/mobile/android/
+apps/mobile/ios/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# tooling
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

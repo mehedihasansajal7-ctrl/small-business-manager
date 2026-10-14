@@ -1,0 +1,22 @@
+{
+  "name": "@sbm/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Small Business Manager API: zero-runtime-dependency Node server over embedded SQLite with tenant-enforced access control, offline sync and the AI agent gateway.",
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server.js",
+    "dev": "node --watch --experimental-strip-types src/server.ts",
+    "seed": "node dist/seed.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@sbm/domain": "*"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8"
+  }
+}

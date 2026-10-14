@@ -1,0 +1,31 @@
+{
+  "name": "small-business-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline-first Small Business Manager + Farming module for 2-5 business partners. Zero mandatory cost.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/api",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "typecheck": "npm run typecheck -ws --if-present",
+    "build": "npm run build -ws --if-present",
+    "test": "npm run test -ws --if-present",
+    "verify": "npm run typecheck && npm run test",
+    "api": "npm run start -w @sbm/api",
+    "api:dev": "npm run dev -w @sbm/api",
+    "web:dev": "npm run dev -w @sbm/web",
+    "web:build": "npm run build -w @sbm/web",
+    "seed": "node apps/api/dist/seed.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
