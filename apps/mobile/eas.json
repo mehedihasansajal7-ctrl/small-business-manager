@@ -1,0 +1,55 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "local",
+    "requireCommit": false
+  },
+  "build": {
+    "development": {
+      "//": "Dev client: needs the `expo-dev-client` package and (optionally) an Expo account. NOT required for a plain local debug APK.",
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://10.0.2.2:8787"
+      }
+    },
+    "preview": {
+      "//": "Free-plan friendly: an installable APK, distributed by link/file — no Google Play, no paid Expo plan needed.",
+      "distribution": "internal",
+      "channel": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://10.0.2.2:8787"
+      }
+    },
+    "local": {
+      "//": "Runs the whole Android build on this machine: `eas build -p android --profile local --local`. Requires JDK 17 + Android SDK. No Expo account is charged for a local build.",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://10.0.2.2:8787"
+      }
+    },
+    "production": {
+      "//": "Release APK for sideloading. Signing is either the locally generated keystore (see README) or EAS-managed credentials.",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://your-server.example"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "//": "Intentionally empty: this app is sideloaded. Google Play submission is out of scope for the offline-first spec."
+    }
+  }
+}

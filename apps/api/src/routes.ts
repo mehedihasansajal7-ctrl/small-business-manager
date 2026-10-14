@@ -313,8 +313,14 @@ export function buildRouter(deps: RouteDeps): Router {
 
   router.get('/api/customers', (ctx) => repo.listCustomers(requireCaller(ctx), ctx.query.get('search') ?? undefined));
   router.post('/api/customers', (ctx) => repo.createCustomer(requireCaller(ctx), asRecord(ctx.body, 'body')));
+  router.patch('/api/customers/:id', (ctx) => repo.updateParty(requireCaller(ctx), 'customer', ctx.params.id as string, asRecord(ctx.body, 'body')));
   router.get('/api/suppliers', (ctx) => repo.listSuppliers(requireCaller(ctx), ctx.query.get('search') ?? undefined));
   router.post('/api/suppliers', (ctx) => repo.createSupplier(requireCaller(ctx), asRecord(ctx.body, 'body')));
+  router.patch('/api/suppliers/:id', (ctx) => repo.updateParty(requireCaller(ctx), 'supplier', ctx.params.id as string, asRecord(ctx.body, 'body')));
+
+  // Corrections: void/return with an audited reversal instead of editing history.
+  router.post('/api/sales/:id/void', (ctx) => repo.voidDocument(requireCaller(ctx), 'sale', ctx.params.id as string, asRecord(ctx.body ?? {}, 'body')));
+  router.post('/api/purchases/:id/void', (ctx) => repo.voidDocument(requireCaller(ctx), 'purchase', ctx.params.id as string, asRecord(ctx.body ?? {}, 'body')));
 
   // --------------------------------------------------------------- inventory
 
@@ -360,7 +366,7 @@ export function buildRouter(deps: RouteDeps): Router {
     const to = ctx.query.get('to') ?? '2999-12-31';
     const showCost = repo.permissions(caller).has('purchase.cost.view');
     return repo.db.all<Record<string, unknown>>('SELECT * FROM purchases WHERE business_id = ? AND document_date BETWEEN ? AND ? ORDER BY document_date DESC LIMIT 500', [caller.business.id, from, to]).map((row) => ({
-      id: row.id, reference: row.reference, supplierId: row.supplier_id, documentDate: row.document_date, currency: row.currency,
+      id: row.id, reference: row.reference, supplierId: row.supplier_id, documentDate: row.document_date, currency: row.currency, status: row.status,
       total: row.total, paid: row.paid, payable: row.payable,
       ...(showCost ? { subtotal: row.subtotal, tax: row.tax } : {}),
       lines: repo.db.all('SELECT product_id AS productId, quantity, unit, unit_cost AS unitCost, line_total AS lineTotal FROM purchase_lines WHERE purchase_id = ?', [row.id]),
@@ -375,7 +381,7 @@ export function buildRouter(deps: RouteDeps): Router {
     const to = ctx.query.get('to') ?? '2999-12-31';
     const showCost = repo.permissions(caller).has('sale.view') && repo.permissions(caller).has('purchase.cost.view');
     return repo.db.all<Record<string, unknown>>('SELECT * FROM sales WHERE business_id = ? AND document_date BETWEEN ? AND ? ORDER BY document_date DESC LIMIT 500', [caller.business.id, from, to]).map((row) => ({
-      id: row.id, reference: row.reference, customerId: row.customer_id, documentDate: row.document_date, currency: row.currency,
+      id: row.id, reference: row.reference, customerId: row.customer_id, documentDate: row.document_date, currency: row.currency, status: row.status,
       gross: row.gross, discount: row.discount, net: row.net, cashReceived: row.cash_received, receivable: row.receivable,
       ...(showCost ? { cogs: row.cogs, grossProfit: String(Number(row.net) - Number(row.cogs)) } : {}),
       lines: repo.db.all('SELECT product_id AS productId, description, quantity, unit, unit_price AS unitPrice, line_total AS lineTotal FROM sale_lines WHERE sale_id = ?', [row.id]),
@@ -455,6 +461,7 @@ export function buildRouter(deps: RouteDeps): Router {
   });
   router.get('/api/reports/trial-balance', (ctx) => repo.trialBalanceReport(requireCaller(ctx), range(ctx)));
   router.get('/api/reports/cash-flow', (ctx) => repo.cashFlowReport(requireCaller(ctx), range(ctx)));
+  router.get('/api/reports/stock-valuation', (ctx) => repo.stockValuationReport(requireCaller(ctx), ctx.query.get('locationId') ?? undefined));
   router.get('/api/reports/receivables', (ctx) => {
     const caller = requireCaller(ctx);
     repo.assertPermission(caller, 'report.view');

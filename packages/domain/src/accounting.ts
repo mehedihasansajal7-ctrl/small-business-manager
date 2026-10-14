@@ -511,6 +511,9 @@ export function buildReversal(entry: JournalEntry, context: { id: string; date: 
   return {
     ...entry,
     id: context.id,
+    // A reversal is its OWN posting event: it must never inherit the original
+    // event id, otherwise an idempotency check would treat it as a duplicate.
+    eventId: context.id,
     date: context.date,
     reference: context.reference,
     description: `Reversal of ${entry.reference}: ${context.reason}`,

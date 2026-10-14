@@ -665,6 +665,87 @@ describe('exports and backup', () => {
   });
 });
 
+describe('corrections and master data', () => {
+  it('voids a sale with an audited reversal instead of editing history', async () => {
+    const w = await setupBusiness('void@test.sbm');
+    await w.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: w.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    const sale = await w.client.post('/api/sales', { documentDate: '2026-04-05', cashReceived: '680', lines: [{ productId: w.productId, quantity: '10', unit: 'kg', unitPrice: '68' }] });
+    expect(sale.status).toBe(200);
+
+    const before = await w.client.get('/api/inventory');
+    expect((before.body as { itemId: string; onHand: string }[]).find((row) => row.itemId === w.productId)?.onHand).toBe('90');
+
+    const voided = await w.client.post(`/api/sales/${sale.body.id}/void`, { date: '2026-04-06', reason: 'Customer returned the full order' });
+    expect(voided.status).toBe(200);
+    expect(voided.body.status).toBe('VOID');
+    expect(voided.body.reversedStockMovements).toBe(1);
+
+    // Stock came back and the ledger nets to zero for that sale.
+    const after = await w.client.get('/api/inventory');
+    expect((after.body as { itemId: string; onHand: string }[]).find((row) => row.itemId === w.productId)?.onHand).toBe('100');
+
+    const trial = await w.client.get('/api/reports/trial-balance?from=2026-04-01&to=2026-04-30');
+    expect(trial.body.balanced).toBe(true);
+
+    // Revenue and COGS for the period are cancelled out by the reversal.
+    const pnl = await w.client.get('/api/reports/profit-loss?from=2026-04-01&to=2026-04-30');
+    expect(pnl.body.netRevenue).toBe('0.00');
+    expect(pnl.body.costOfGoodsSold).toBe('0.00');
+
+    // The document is marked, not deleted, and cannot be voided twice.
+    const listed = await w.client.get('/api/sales');
+    expect((listed.body as { status: string }[])[0]?.status).toBe('VOID');
+    expect((await w.client.post(`/api/sales/${sale.body.id}/void`, { date: '2026-04-07', reason: 'again please' })).status).toBe(409);
+  });
+
+  it('requires the void permission and a reason', async () => {
+    const owner = await setupBusiness('voidperm@test.sbm');
+    await owner.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: owner.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    const sale = await owner.client.post('/api/sales', { documentDate: '2026-04-05', cashReceived: '680', lines: [{ productId: owner.productId, quantity: '10', unit: 'kg', unitPrice: '68' }] });
+
+    const invite = await owner.client.post('/api/members/invites', { role: 'cashier', email: 'void.cashier@test.sbm' });
+    const cashier = client();
+    await cashier.post('/api/auth/register', { email: 'void.cashier@test.sbm', password: 'password123', displayName: 'Cashier' });
+    await cashier.post('/api/invites/accept', { code: invite.body.code });
+    expect((await cashier.post(`/api/sales/${sale.body.id}/void`, { date: '2026-04-06', reason: 'cashier attempt' })).status).toBe(403);
+
+    expect((await owner.client.post(`/api/sales/${sale.body.id}/void`, { date: '2026-04-06', reason: 'no' })).status).toBe(400);
+  });
+
+  it('updates customer and supplier master data', async () => {
+    const w = await setupBusiness('party@test.sbm');
+    const updated = await w.client.patch(`/api/customers/${w.customerId}`, { name: 'Nasir Traders Ltd', phone: '01799999999' });
+    expect(updated.status).toBe(200);
+    expect(updated.body.name).toBe('Nasir Traders Ltd');
+
+    const customers = await w.client.get('/api/customers');
+    expect((customers.body as { name: string; phone: string }[])[0]?.phone).toBe('01799999999');
+
+    expect((await w.client.patch(`/api/suppliers/${w.supplierId}`, { name: 'Agro Inputs BD' })).status).toBe(200);
+  });
+
+  it('reports stock valuation and hides cost detail without permission', async () => {
+    const w = await setupBusiness('val@test.sbm');
+    await w.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: w.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+
+    const report = await w.client.get('/api/reports/stock-valuation');
+    expect(report.status).toBe(200);
+    expect(report.body.totalValue).toBe('5800.00');
+    expect(report.body.method).toBe('WEIGHTED_AVERAGE');
+    const rice = (report.body.rows as { itemId: string; unitCost: string; value: string }[]).find((row) => row.itemId === w.productId);
+    expect(rice?.unitCost).toBe('58.00');
+    expect(rice?.value).toBe('5800.00');
+
+    const invite = await w.client.post('/api/members/invites', { role: 'viewer', email: 'val.viewer@test.sbm' });
+    const viewer = client();
+    await viewer.post('/api/auth/register', { email: 'val.viewer@test.sbm', password: 'password123', displayName: 'Viewer' });
+    await viewer.post('/api/invites/accept', { code: invite.body.code });
+    const restricted = await viewer.get('/api/reports/stock-valuation');
+    expect(restricted.status).toBe(200);
+    expect((restricted.body.rows as { value?: string }[])[0]?.value).toBeUndefined();
+  });
+});
+
 describe('validation and limits', () => {
   it('rejects malformed input instead of storing it', async () => {
     const w = await setupBusiness('valid@test.sbm');

@@ -1,0 +1,27 @@
+# Expo / React Native
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+.metro-health-check*
+
+# Native projects are generated, never committed (prebuild output)
+/android
+/ios
+
+# Local secrets / state
+.env
+.env.local
+*.local
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -15,6 +15,7 @@ import {
   buildInventoryLossPosting,
   buildPartnerCapitalPosting,
   buildPurchasePosting,
+  buildReversal,
   buildSalePosting,
   buildSupplierPaymentPosting,
   buildTransferPosting,
@@ -33,6 +34,7 @@ import {
   pctOf,
   permissionsFor,
   profitAndLoss,
+  reversalMovements,
   sha256Hex,
   subMoney,
   sumMoney,
@@ -1317,6 +1319,188 @@ export class Repository {
     });
   }
 
+  // -------------------------------------------------------------------------
+  // Corrections: posted documents are never edited or deleted, they are voided
+  // with an audited reversal (reversal journal entry + reversing stock moves).
+  // -------------------------------------------------------------------------
+
+  voidDocument(caller: Caller, kind: 'sale' | 'purchase', documentId: string, input: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, kind === 'sale' ? 'sale.void' : 'purchase.return');
+    const body = asRecord(input ?? {}, 'void');
+    const reason = requireString(body.reason, 'reason', { minLength: 5, maxLength: 400 });
+    const date = requireString(body.date, 'date', { maxLength: 10 });
+    const restock = body.restock !== false;
+
+    const table = kind === 'sale' ? 'sales' : 'purchases';
+    const document = this.assertBusinessValue(
+      this.db.get<{ id: string; reference: string; status: string; currency: string; event_id: string; total?: string; net?: string }>(
+        kind === 'sale'
+          ? 'SELECT id, reference, status, currency, event_id, net AS total FROM sales WHERE id = ? AND business_id = ?'
+          : 'SELECT id, reference, status, currency, event_id, total FROM purchases WHERE id = ? AND business_id = ?',
+        [documentId, caller.business.id],
+      ),
+      kind === 'sale' ? 'Sale' : 'Purchase',
+    );
+    if (document.status === 'VOID' || document.status === 'RETURNED') {
+      throw HttpError.conflict('ALREADY_VOID', `${document.reference} has already been reversed`);
+    }
+
+    const eventId = randomUUID();
+    return this.db.transaction(() => {
+      // 1. Reverse the accounting impact exactly (never mutate posted history).
+      const original = this.journalEntries(caller.business.id).find((entry) => entry.sourceType === (kind === 'sale' ? 'SALE' : 'PURCHASE') && entry.sourceId === document.reference);
+      if (!original) throw HttpError.conflict('NO_JOURNAL', `No posted journal entry found for ${document.reference}`);
+      const reversal = buildReversal(original, {
+        id: `${eventId}:journal`,
+        date,
+        reference: `${document.reference}-REV`,
+        postedBy: caller.user.id,
+        reason,
+      });
+      this.postJournal(caller, reversal);
+
+      // 2. Reverse the stock impact (goods come back, or leave again).
+      let reversedMovements = 0;
+      if (restock) {
+        const rows = this.db.all<MovementRow>('SELECT * FROM stock_movements WHERE business_id = ? AND source_type = ? AND source_id = ?', [
+          caller.business.id,
+          kind === 'sale' ? 'SALE' : 'PURCHASE',
+          document.reference,
+        ]);
+        for (const row of rows) {
+          const [domain] = this.toDomainMovements([row]);
+          if (!domain) continue;
+          const reversalMove = reversalMovements(domain, {
+            id: this.id(),
+            eventId: randomUUID(),
+            idempotencyKey: `reversal:${row.id}`,
+            actorId: caller.user.id,
+            deviceId: 'server',
+            occurredAt: date,
+            reason: `${kind === 'sale' ? 'Sale' : 'Purchase'} reversal: ${reason}`,
+          });
+          this.db.run(
+            `INSERT INTO stock_movements (id, business_id, item_id, location_id, direction, quantity, unit, unit_cost, currency, lot_id, expiry_date, source_type, source_id, actor_id, device_id, event_id, idempotency_key, reversal_of, reason, occurred_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REVERSAL', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              reversalMove.id,
+              caller.business.id,
+              reversalMove.itemId,
+              reversalMove.locationId,
+              reversalMove.direction,
+              reversalMove.quantity.toString(),
+              reversalMove.unit,
+              reversalMove.unitCost.amount.toString(),
+              reversalMove.unitCost.currency,
+              reversalMove.lotId ?? null,
+              reversalMove.expiryDate ?? null,
+              document.reference,
+              caller.user.id,
+              'server',
+              reversalMove.eventId,
+              reversalMove.idempotencyKey,
+              row.id,
+              reversalMove.reason ?? null,
+              date,
+              this.now(),
+            ],
+          );
+          reversedMovements += 1;
+        }
+      }
+
+      this.db.run(`UPDATE ${table} SET status = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND business_id = ?`, [
+        kind === 'sale' ? 'VOID' : 'RETURNED',
+        this.now(),
+        documentId,
+        caller.business.id,
+      ]);
+      this.audit({
+        businessId: caller.business.id,
+        actorId: caller.user.id,
+        action: `${kind}.void`,
+        entityType: kind,
+        entityId: documentId,
+        detail: { reference: document.reference, reason, restock, reversedMovements },
+      });
+      return {
+        id: documentId,
+        reference: document.reference,
+        status: kind === 'sale' ? 'VOID' : 'RETURNED',
+        reversalReference: `${document.reference}-REV`,
+        reversedStockMovements: reversedMovements,
+        amountReversed: document.total,
+        note: 'Posted history was not edited: an audited reversal entry and reversing stock movements were added.',
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Master data updates
+  // -------------------------------------------------------------------------
+
+  updateParty(caller: Caller, kind: 'customer' | 'supplier', id: string, patch: Record<string, unknown>): Record<string, unknown> {
+    this.assertPermission(caller, kind === 'customer' ? 'customer.manage' : 'supplier.manage');
+    const table = kind === 'customer' ? 'customers' : 'suppliers';
+    const existing = this.assertBusinessValue(this.db.get<Record<string, unknown>>(`SELECT * FROM ${table} WHERE id = ? AND business_id = ?`, [id, caller.business.id]), kind === 'customer' ? 'Customer' : 'Supplier');
+    const columns: Record<string, string> = { name: 'name', phone: 'phone', email: 'email', address: 'address', creditLimit: 'credit_limit', openingBalance: 'opening_balance' };
+    const fields: string[] = [];
+    const params: unknown[] = [];
+    for (const [key, column] of Object.entries(columns)) {
+      if (patch[key] === undefined) continue;
+      if (key === 'name') {
+        fields.push(`${column} = ?`);
+        params.push(requireString(patch[key], 'name', { maxLength: 160 }));
+        continue;
+      }
+      if (key === 'openingBalance' || key === 'creditLimit') {
+        fields.push(`${column} = ?`);
+        params.push(patch[key] === null ? null : dec(String(patch[key])).toString());
+        continue;
+      }
+      fields.push(`${column} = ?`);
+      params.push(optionalString(patch[key], key, 400));
+    }
+    if (patch.isActive !== undefined) {
+      fields.push('is_active = ?');
+      params.push(patch.isActive ? 1 : 0);
+    }
+    if (fields.length === 0) return existing;
+    fields.push('revision = revision + 1', 'updated_at = ?');
+    params.push(this.now(), id, caller.business.id);
+    this.db.run(`UPDATE ${table} SET ${fields.join(', ')} WHERE id = ? AND business_id = ?`, params);
+    this.audit({ businessId: caller.business.id, actorId: caller.user.id, action: `${kind}.update`, entityType: kind, entityId: id, detail: patch });
+    return this.db.get<Record<string, unknown>>(`SELECT * FROM ${table} WHERE id = ?`, [id]) as Record<string, unknown>;
+  }
+
+  /** Stock valuation report: quantity, weighted-average unit cost and total value. */
+  stockValuationReport(caller: Caller, locationId?: string) {
+    this.assertPermission(caller, 'inventory.view');
+    const currency = caller.business.currency;
+    const products = this.db.all<ProductRow>(`SELECT * FROM products WHERE business_id = ? AND is_active = 1 AND kind != 'SERVICE' ORDER BY name`, [caller.business.id]);
+    const rows = products.map((product) => {
+      const rowsFor = locationId ? this.movements(caller.business.id, product.id).filter((m) => m.location_id === locationId) : this.movements(caller.business.id, product.id);
+      if (rowsFor.length === 0) return { itemId: product.id, name: product.name, unit: product.unit, quantity: '0', unitCost: '0.00', value: '0.00' };
+      const valuation = weightedAverageValuation(this.toDomainMovements(rowsFor), { itemId: product.id, currency });
+      return {
+        itemId: product.id,
+        name: product.name,
+        unit: valuation.unit,
+        quantity: valuation.quantity.toString(),
+        unitCost: valuation.unitCost.amount.toString(),
+        value: valuation.value.amount.toString(),
+      };
+    });
+    const total = rows.reduce<Money>((acc, row) => addMoney(acc, money(currency, row.value)), zeroMoney(currency));
+    const showCost = this.permissions(caller).has('purchase.cost.view');
+    return {
+      currency,
+      method: 'WEIGHTED_AVERAGE' as const,
+      totalValue: total.amount.toString(),
+      rows: showCost ? rows : rows.map(({ unitCost, value, ...rest }) => ({ ...rest, value: undefined, restricted: 'purchase.cost.view required for cost detail' })),
+    };
+  }
+
   recordCustomerReceipt(caller: Caller, input: Record<string, unknown>): Record<string, unknown> {
     this.assertPermission(caller, 'finance.manage');
     const body = asRecord(input, 'receipt');
@@ -1502,11 +1686,15 @@ export class Repository {
     const flow = cashFlow(entries, { from: range.from, to: range.to, currency });
     const showCost = this.permissions(caller).has('financial_reports.view');
     const sales = sumMoney(
-      this.db.all<{ net: string; currency: string }>('SELECT net, currency FROM sales WHERE business_id = ? AND document_date >= ? AND document_date <= ?', [caller.business.id, range.from, range.to]).map((r) => money(r.currency, r.net)),
+      this.db
+        .all<{ net: string; currency: string }>(`SELECT net, currency FROM sales WHERE business_id = ? AND document_date >= ? AND document_date <= ? AND status = 'POSTED'`, [caller.business.id, range.from, range.to])
+        .map((r) => money(r.currency, r.net)),
       currency,
     );
     const purchases = sumMoney(
-      this.db.all<{ total: string; currency: string }>('SELECT total, currency FROM purchases WHERE business_id = ? AND document_date >= ? AND document_date <= ?', [caller.business.id, range.from, range.to]).map((r) => money(r.currency, r.total)),
+      this.db
+        .all<{ total: string; currency: string }>(`SELECT total, currency FROM purchases WHERE business_id = ? AND document_date >= ? AND document_date <= ? AND status = 'POSTED'`, [caller.business.id, range.from, range.to])
+        .map((r) => money(r.currency, r.total)),
       currency,
     );
     const lowStock = this.listStock(caller).filter((row) => (row as { belowReorder: boolean }).belowReorder).length;

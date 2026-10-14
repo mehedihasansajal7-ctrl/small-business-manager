@@ -231,6 +231,9 @@ describe('reversal keeps history intact', () => {
     const reversal = buildReversal(original, { id: 'rev-1', date: '2026-01-20', reference: 'SAL-3-REV', postedBy: 'user-2', reason: 'Customer returned goods' });
     expect(validateJournalEntry(reversal).ok).toBe(true);
     expect(reversal.reversalOf).toBe(original.id);
+    // The reversal is a distinct posting event, never a duplicate of the original.
+    expect(reversal.eventId).toBe('rev-1');
+    expect(reversal.eventId).not.toBe(original.eventId);
 
     const combined = [...original.lines, ...reversal.lines];
     expect(totalDebit(combined, 'BDT').amount.eq(totalCredit(combined, 'BDT').amount)).toBe(true);
