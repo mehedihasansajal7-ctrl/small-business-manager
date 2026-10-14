@@ -52,7 +52,6 @@ cookie value = `${sessionId}.${base64url(HMAC-SHA256(sessionId, SESSION_SECRET))
   Both are HMAC-signed with `SESSION_SECRET`; a tampered cookie or token is rejected (`401`).
 - `Path=/` and `Max-Age = SESSION_TTL_HOURS x 3600` (default 720 h = 30 days).
 - `Secure` is now applied *only on HTTPS*; setting `INSECURE_COOKIES=1` forces it off entirely. `.env.example` documents that as **local HTTP development only**, and production must leave it unset.
-  **local HTTP development only**. Production must leave it unset.
 - Logout destroys the session row and sets an empty cookie with `Max-Age=0`.
 - `pruneExpiredSessions()` runs hourly as a background job.
 - Changing `SESSION_SECRET` invalidates every existing session (all signatures fail).
