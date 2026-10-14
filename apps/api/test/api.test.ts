@@ -943,6 +943,66 @@ describe('stock transfers and opening balances', () => {
   });
 });
 
+describe('integrity / reconciliation report', () => {
+  it('passes on a healthy set of books and detects a broken ledger', async () => {
+    const w = await setupBusiness('integrity@test.sbm');
+    const farm = await w.client.post<{ id: string }>('/api/farming/farms', { name: 'Farm' });
+    const unit = await w.client.post<{ id: string }>('/api/farming/units', { farmId: farm.body.id, kind: 'PLOT', name: 'Plot A' });
+    const cycle = await w.client.post<{ id: string }>('/api/farming/cycles', { farmId: farm.body.id, unitId: unit.body.id, farmingType: 'CROP', title: 'Boro', startDate: '2026-04-01', plannedOutput: '1000', plannedOutputUnit: 'kg' });
+    const farmProduct = await w.client.post<{ id: string }>('/api/products', { name: 'Paddy', unit: 'kg', kind: 'OUTPUT', salePrice: '30' });
+
+    await w.client.post('/api/finance/opening-balance', { accountCode: '1000', amount: '10000', date: '2026-04-01' });
+    await w.client.post('/api/inventory/opening', { itemId: w.productId, quantity: '100', unit: 'kg', unitCost: '58', date: '2026-04-01' });
+    await w.client.post('/api/purchases', { documentDate: '2026-04-02', paid: '6000', lines: [{ productId: w.inputId, quantity: '100', unit: 'kg', unitCost: '60' }] });
+    await w.client.post('/api/sales', { documentDate: '2026-04-05', cashReceived: '680', lines: [{ productId: w.productId, quantity: '10', unit: 'kg', unitPrice: '68' }] });
+    await w.client.post(`/api/farming/cycles/${cycle.body.id}/events`, { eventType: 'INPUT_ISSUE', occurredOn: '2026-04-06', productId: w.inputId, quantity: '50', unit: 'kg' });
+    await w.client.post(`/api/farming/cycles/${cycle.body.id}/events`, { eventType: 'DIRECT_LABOUR', occurredOn: '2026-04-07', amount: '2000' });
+    await w.client.post('/api/farming/allocations', {
+      amount: '1000',
+      basis: 'AREA',
+      incurredOn: '2026-04-08',
+      note: 'Shared pump cost',
+      targets: [{ cycleId: cycle.body.id, basisValue: '10' }],
+    });
+    await w.client.post(`/api/farming/cycles/${cycle.body.id}/harvest`, { occurredOn: '2026-04-20', quantity: '400', unit: 'kg', productId: farmProduct.body.id });
+
+    const report = await w.client.get<{ ok: boolean; summary: string; checks: { id: string; ok: boolean; detail: string }[] }>('/api/reports/integrity');
+    expect(report.status).toBe(200);
+    expect(report.body.checks.length).toBe(9);
+    expect(report.body.checks.map((c) => c.id)).toContain('sale_totals_reconcile');
+    expect(report.body.checks.map((c) => c.id)).toContain('shared_costs_fully_allocated');
+    expect(report.body.checks.map((c) => c.id)).toContain('harvest_cost_within_batch_cost');
+    const failures = report.body.checks.filter((c) => !c.ok);
+    expect(failures.map((c) => `${c.id}: ${c.detail}`)).toEqual([]);
+    expect(report.body.ok).toBe(true);
+
+    // Now corrupt a header the way a bad manual edit would, and confirm the report notices.
+    app.db.run(`UPDATE sales SET cogs = '999.00' WHERE business_id = ?`, [w.businessId]);
+    const broken = await w.client.get<{ ok: boolean; summary: string; checks: { id: string; ok: boolean; detail: string }[] }>('/api/reports/integrity');
+    expect(broken.body.ok).toBe(false);
+    expect(broken.body.summary).toMatch(/need attention/);
+    const saleCheck = broken.body.checks.find((c) => c.id === 'sale_totals_reconcile');
+    expect(saleCheck?.ok).toBe(false);
+    expect(saleCheck?.detail).toMatch(/disagree/i);
+    // The other checks still pass: the report isolates what is actually wrong.
+    expect(broken.body.checks.find((c) => c.id === 'journal_entries_balanced')?.ok).toBe(true);
+  });
+
+  it('is available to any role with report.view but not to a bare viewer without it', async () => {
+    const owner = await setupBusiness('integrityperm@test.sbm');
+    const invite = await owner.client.post<{ code: string }>('/api/members/invites', { role: 'cashier', email: 'integrity.cashier@test.sbm' });
+    const cashier = client();
+    await cashier.post('/api/auth/register', { email: 'integrity.cashier@test.sbm', password: 'password123', displayName: 'Cashier' });
+    await cashier.post('/api/invites/accept', { code: invite.body.code });
+    expect((await cashier.get('/api/reports/integrity')).status).toBe(200);
+
+    const members = await owner.client.get<{ id: string; email: string }[]>('/api/members');
+    const cashierMember = members.body.find((m) => m.email === 'integrity.cashier@test.sbm');
+    await owner.client.patch(`/api/members/${cashierMember?.id}`, { denials: ['report.view'] });
+    expect((await cashier.get('/api/reports/integrity')).status).toBe(403);
+  });
+});
+
 describe('validation and limits', () => {
   it('rejects malformed input instead of storing it', async () => {
     const w = await setupBusiness('valid@test.sbm');

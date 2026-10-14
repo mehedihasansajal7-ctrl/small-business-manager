@@ -11,8 +11,7 @@
     "baseUrl": ".",
     "paths": {
       "@sbm/domain": ["../../packages/domain/dist/index.d.ts"]
-    },
-    "types": ["react", "react-native", "expo"]
+    }
   },
   "include": ["**/*.ts", "**/*.tsx", "app.config.ts", ".expo/types/**/*.ts", "expo-env.d.ts"],
   "exclude": ["node_modules", "android", "ios", ".expo"]

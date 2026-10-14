@@ -132,7 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         business: current,
         cachedAt: new Date().toISOString(),
       };
-      await writeJsonPref(PREF_KEYS.activeBusinessId, snapshot);
+      await writeJsonPref(PREF_KEYS.authSnapshot, snapshot);
       return true;
     } catch {
       return false;
@@ -140,7 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loadFromCache = useCallback(async (): Promise<boolean> => {
-    const snapshot = await readJsonPref<CachedSnapshot>(PREF_KEYS.activeBusinessId);
+    const snapshot = await readJsonPref<CachedSnapshot>(PREF_KEYS.authSnapshot);
     if (!snapshot?.user) return false;
     if (!mounted.current) return true;
     setUser(snapshot.user);

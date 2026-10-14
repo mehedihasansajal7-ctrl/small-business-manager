@@ -17,7 +17,14 @@ import type { FarmingStackParamList } from '../../navigation/types';
 
 type Props = NativeStackScreenProps<FarmingStackParamList, 'FarmingEventForm'>;
 
-/** Direct-cost events the server accepts, and the expense account it defaults to. */
+/**
+ * Direct-cost events the server accepts, and the expense account it defaults to.
+ *
+ * `WASTE` is deliberately **not** in this list: the server routes
+ * `MORTALITY` and `WASTE` through the same loss branch, which requires a positive
+ * quantity, a unit and a reason ≥ 3 characters. Submitting it as a plain cost
+ * would come back `REJECTED`, so the form treats it as a loss instead.
+ */
 const COST_EVENTS: readonly { readonly eventType: string; readonly defaultAccount: string }[] = [
   { eventType: 'DIRECT_LABOUR', defaultAccount: '5110' },
   { eventType: 'MACHINERY_FUEL', defaultAccount: '5140' },
@@ -26,7 +33,6 @@ const COST_EVENTS: readonly { readonly eventType: string; readonly defaultAccoun
   { eventType: 'PACKAGING', defaultAccount: '5180' },
   { eventType: 'TRANSPORT', defaultAccount: '5130' },
   { eventType: 'OVERHEAD', defaultAccount: '5100' },
-  { eventType: 'WASTE', defaultAccount: '5100' },
 ];
 
 /**

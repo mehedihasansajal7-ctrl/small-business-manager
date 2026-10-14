@@ -59,6 +59,14 @@ export function FinanceHomeScreen({ navigation }: Props) {
     { key: 'PartnerCapital', label: t('finance.capital'), permission: 'partner_capital.view' },
   ];
 
+  /**
+   * The actions table above mixes screens with different params, which the typed
+   * `navigate` overload set cannot express; this single cast keeps the rest of the
+   * file type-safe, and the keys/params are still declared against the real
+   * `FinanceStackParamList`.
+   */
+  const go = navigation.navigate as unknown as (name: keyof FinanceStackParamList, params?: object) => void;
+
   return (
     <Screen title={t('nav.finance')} subtitle={business?.name} onRefresh={() => void syncNow()} refreshing={syncing}>
       <OfflineBanner online={online} pending={summary?.pending ?? 0} conflicts={summary?.conflictsOpen ?? 0} lastSyncedAt={summary?.lastSyncedAt ?? null} syncing={syncing} onSyncNow={() => void syncNow()} />

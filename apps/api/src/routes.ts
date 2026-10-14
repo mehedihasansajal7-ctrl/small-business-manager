@@ -476,6 +476,7 @@ export function buildRouter(deps: RouteDeps): Router {
   router.get('/api/reports/trial-balance', (ctx) => repo.trialBalanceReport(requireCaller(ctx), range(ctx)));
   router.get('/api/reports/cash-flow', (ctx) => repo.cashFlowReport(requireCaller(ctx), range(ctx)));
   router.get('/api/reports/stock-valuation', (ctx) => repo.stockValuationReport(requireCaller(ctx), ctx.query.get('locationId') ?? undefined));
+  router.get('/api/reports/integrity', (ctx) => repo.integrityReport(requireCaller(ctx)));
   router.get('/api/reports/receivables', (ctx) => {
     const caller = requireCaller(ctx);
     repo.assertPermission(caller, 'report.view');

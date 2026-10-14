@@ -119,9 +119,11 @@ export async function enqueueWithin<T>(tx: Tx, input: EnqueueInput<T>, preview?:
       event.status,
       event.risk,
       event.attempts,
-      event.lastError,
-      event.nextAttemptAt,
-      event.serverRevision,
+      // The domain's OutboxEvent marks these optional, but SQLite needs an explicit
+      // NULL rather than `undefined` for a nullable column.
+      event.lastError ?? null,
+      event.nextAttemptAt ?? null,
+      event.serverRevision ?? null,
       null,
       null,
     ],

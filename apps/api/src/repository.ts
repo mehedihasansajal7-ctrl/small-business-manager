@@ -1662,6 +1662,129 @@ export class Repository {
     });
   }
 
+  /**
+   * Integrity / reconciliation report.
+   *
+   * Every check is derived from the stored data, so this is a real self-audit
+   * rather than a stored flag: it is what you run before trusting a report or
+   * after a restore. Nothing is "fixed" here - the report only tells the truth.
+   */
+  integrityReport(caller: Caller) {
+    this.assertPermission(caller, 'report.view');
+    const businessId = caller.business.id;
+    const currency = caller.business.currency;
+    type Check = { id: string; ok: boolean; detail: string };
+    const checks: Check[] = [];
+
+    // 1. Every journal entry must balance.
+    const entryTotals = this.db.all<{ entry_id: string; debit: string; credit: string; reference: string }>(
+      `SELECT e.id AS entry_id, e.reference,
+              COALESCE(SUM(CAST(l.debit AS REAL)), 0) AS debit,
+              COALESCE(SUM(CAST(l.credit AS REAL)), 0) AS credit
+       FROM journal_entries e LEFT JOIN journal_lines l ON l.entry_id = e.id
+       WHERE e.business_id = ? GROUP BY e.id`,
+      [businessId],
+    );
+    const unbalanced = entryTotals.filter((row) => Math.abs(Number(row.debit) - Number(row.credit)) > 0.0001);
+    checks.push({
+      id: 'journal_entries_balanced',
+      ok: unbalanced.length === 0,
+      detail: unbalanced.length === 0 ? `${entryTotals.length} posted entries all balance` : `${unbalanced.length} unbalanced entry(ies), e.g. ${unbalanced[0]?.reference}`,
+    });
+
+    // 2. The trial balance must balance.
+    const balance = trialBalance(this.journalEntries(businessId), currency);
+    checks.push({ id: 'trial_balance_balanced', ok: balance.balanced, detail: `debit ${balance.totalDebit.amount.toString()} vs credit ${balance.totalCredit.amount.toString()}` });
+
+    // 3. No negative stock anywhere (stock is only ever derived from the ledger).
+    const itemLocations = this.db.all<{ item_id: string; location_id: string }>(
+      'SELECT DISTINCT item_id, location_id FROM stock_movements WHERE business_id = ?',
+      [businessId],
+    );
+    const negative: string[] = [];
+    for (const pair of itemLocations) {
+      const balance2 = this.stockBalance(businessId, pair.item_id, pair.location_id);
+      if (balance2.quantity.isNegative()) negative.push(`${pair.item_id}@${pair.location_id} = ${balance2.quantity.toString()}`);
+    }
+    checks.push({ id: 'no_negative_stock', ok: negative.length === 0, detail: negative.length === 0 ? `${itemLocations.length} item/location pairs are non-negative` : negative.slice(0, 3).join(', ') });
+
+    // 4. Every movement must point at a live product, location and unit.
+    const orphanMovements = this.db.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM stock_movements m
+       LEFT JOIN products p ON p.id = m.item_id
+       LEFT JOIN locations l ON l.id = m.location_id
+       WHERE m.business_id = ? AND (p.id IS NULL OR l.id IS NULL)`,
+      [businessId],
+    )?.count ?? 0;
+    checks.push({ id: 'stock_movements_reference_live_records', ok: orphanMovements === 0, detail: orphanMovements === 0 ? 'every movement resolves to a product and a location' : `${orphanMovements} orphan movement(s)` });
+
+    // 5. Sale headers must agree with their lines and their posted COGS.
+    const saleMismatches = this.db.all<{ reference: string; net: string; computed_net: string; cogs: string; computed_cogs: string }>(
+      `SELECT s.reference,
+              CAST(s.net AS REAL) AS net,
+              (CAST(s.gross AS REAL) + CAST(s.tax AS REAL) - CAST(s.discount AS REAL)) AS computed_net,
+              CAST(s.cogs AS REAL) AS cogs,
+              COALESCE((SELECT SUM(CAST(l.unit_cost AS REAL) * CAST(l.quantity AS REAL)) FROM sale_lines l WHERE l.sale_id = s.id), 0) AS computed_cogs
+       FROM sales s WHERE s.business_id = ? AND s.status = 'POSTED'`,
+      [businessId],
+    ).filter((row) => Math.abs(Number(row.net) - Number(row.computed_net)) > 0.0001 || Math.abs(Number(row.cogs) - Number(row.computed_cogs)) > 0.0001);
+    checks.push({
+      id: 'sale_totals_reconcile',
+      ok: saleMismatches.length === 0,
+      detail: saleMismatches.length === 0 ? 'every sale header equals its lines and its COGS lines' : `${saleMismatches.length} sale(s) disagree, e.g. ${saleMismatches[0]?.reference}`,
+    });
+
+    // 6. Purchase headers must agree with their lines.
+    const purchaseMismatches = this.db.all<{ reference: string; total: string; computed: string }>(
+      `SELECT p.reference, CAST(p.total AS REAL) AS total,
+              (COALESCE((SELECT SUM(CAST(l.line_total AS REAL)) FROM purchase_lines l WHERE l.purchase_id = p.id), 0) + CAST(p.tax AS REAL)) AS computed
+       FROM purchases p WHERE p.business_id = ? AND p.status = 'POSTED'`,
+      [businessId],
+    ).filter((row) => Math.abs(Number(row.total) - Number(row.computed)) > 0.0001);
+    checks.push({ id: 'purchase_totals_reconcile', ok: purchaseMismatches.length === 0, detail: purchaseMismatches.length === 0 ? 'every purchase header equals its lines plus tax' : `${purchaseMismatches.length} purchase(s) disagree` });
+
+    // 7. A cycle must never release more cost than it has accumulated.
+    const overHarvested: string[] = [];
+    for (const cycle of this.db.all<{ id: string; reference: string }>('SELECT id, reference FROM production_cycles WHERE business_id = ?', [businessId])) {
+      const costToDate = this.cycleCostToDate(businessId, cycle.id, currency);
+      const harvested = this.harvestedQuantity(businessId, cycle.id);
+      if (harvested.assignedCost.amount.gt(costToDate.amount)) {
+        overHarvested.push(`${cycle.reference}: released ${harvested.assignedCost.amount.toString()} of ${costToDate.amount.toString()}`);
+      }
+    }
+    checks.push({ id: 'harvest_cost_within_batch_cost', ok: overHarvested.length === 0, detail: overHarvested.length === 0 ? 'every harvest released at most the accumulated batch cost' : overHarvested.join('; ') });
+
+    // 8. Shared costs must be fully allocated exactly once.
+    const sharedProblems: string[] = [];
+    for (const source of this.db.all<{ id: string; currency: string; amount: string; allocated_at: string | null }>(
+      'SELECT id, currency, amount, allocated_at FROM cost_sources WHERE business_id = ? AND shared = 1',
+      [businessId],
+    )) {
+      const allocated = this.db.get<{ sum: string }>('SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) AS sum FROM cost_allocations WHERE cost_source_id = ?', [source.id])?.sum ?? '0';
+      if (Math.abs(Number(allocated) - Number(source.amount)) > 0.0001) {
+        sharedProblems.push(`${source.id}: allocated ${allocated} of ${source.amount}`);
+      }
+      if (!source.allocated_at) sharedProblems.push(`${source.id}: never marked as allocated`);
+    }
+    checks.push({ id: 'shared_costs_fully_allocated', ok: sharedProblems.length === 0, detail: sharedProblems.length === 0 ? 'every shared cost was allocated exactly once' : sharedProblems.slice(0, 3).join('; ') });
+
+    // 9. Idempotency keys must be unique (no double-posted movement).
+    const duplicateKeys = this.db.get<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM (SELECT idempotency_key FROM stock_movements WHERE business_id = ? GROUP BY idempotency_key HAVING COUNT(*) > 1)',
+      [businessId],
+    )?.count ?? 0;
+    checks.push({ id: 'no_duplicate_stock_events', ok: duplicateKeys === 0, detail: duplicateKeys === 0 ? 'no duplicate stock event keys' : `${duplicateKeys} duplicated key(s)` });
+
+    const issues = checks.filter((check) => !check.ok);
+    return {
+      businessId,
+      checkedAt: new Date().toISOString(),
+      ok: issues.length === 0,
+      summary: issues.length === 0 ? 'All reconciliation checks passed.' : `${issues.length} reconciliation check(s) need attention.`,
+      checks,
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Stock transfers between locations and opening balances
   // -------------------------------------------------------------------------

@@ -23,6 +23,7 @@
       "@sbm/domain": ["../../packages/domain/src/index.ts"]
     }
   },
-  "//": "Config files are excluded: the root-hoisted @vitejs/plugin-react types resolve against a different Vite copy than apps/web's. Vite itself typechecks nothing, so the app sources are what matter here.",
-  "include": ["src", "test"]
+  "//": "Config files are excluded: the root-hoisted @vitejs/plugin-react types resolve against a different Vite copy than apps/web's. test/integration is excluded because it imports apps/api sources, which are typechecked by their own (less strict) tsconfig.",
+  "include": ["src", "test"],
+  "exclude": ["test/integration"]
 }

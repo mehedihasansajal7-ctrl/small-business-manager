@@ -19,6 +19,8 @@ export const STRINGS = {
   'common.delete': { en: 'Delete', bn: 'মুছুন' },
   'common.edit': { en: 'Edit', bn: 'সম্পাদনা' },
   'common.add': { en: 'Add', bn: 'যোগ করুন' },
+  'common.create': { en: 'Create', bn: 'তৈরি করুন' },
+  'common.share': { en: 'Share', bn: 'শেয়ার' },
   'common.search': { en: 'Search', bn: 'খুঁজুন' },
   'common.retry': { en: 'Try again', bn: 'আবার চেষ্টা করুন' },
   'common.refresh': { en: 'Refresh', bn: 'রিফ্রেশ' },

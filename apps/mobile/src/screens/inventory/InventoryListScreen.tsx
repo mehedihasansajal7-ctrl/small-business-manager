@@ -5,8 +5,7 @@ import { Text, View } from 'react-native';
 import { dec } from '@sbm/domain';
 
 import { useAuth } from '../../auth/AuthProvider';
-import { Button, Card, EmptyState, Field, ListRow, MoneyText, Notice, OfflineBanner, QuantityText, Screen, StatusBadge, Tag } from '../../components';
-import { proposals } from '../../offline/outbox';
+import { Button, Card, EmptyState, Field, ListRow, MoneyText, Notice, OfflineBanner, QuantityText, Screen, Tag } from '../../components';
 import { localStock } from '../../offline/repository';
 import { useI18n } from '../../i18n';
 import { useAsyncData, useReloadOnFocus } from '../../lib/useAsyncData';
@@ -37,13 +36,9 @@ export function InventoryListScreen({ navigation }: Props) {
 
   const loader = useCallback(async () => {
     const rows = await localStock();
-    const pending = businessId ? await proposals(businessId, 'stock_movement') : [];
     const needle = search.trim().toLowerCase();
-    return {
-      rows: needle ? rows.filter((row) => row.name.toLowerCase().includes(needle)) : rows,
-      pending,
-    };
-  }, [search, businessId]);
+    return { rows: needle ? rows.filter((row) => row.name.toLowerCase().includes(needle)) : rows };
+  }, [search]);
 
   const { data, loading, reload } = useAsyncData(loader, [loader]);
   useReloadOnFocus(reload);
@@ -56,19 +51,6 @@ export function InventoryListScreen({ navigation }: Props) {
 
       <Field label={t('common.search')} value={search} onChangeText={setSearch} autoCapitalize="none" />
       <Text style={[typography.caption, { color: colors.textMuted, marginBottom: spacing.md }]}>{t('inventory.balanceAsOf')}</Text>
-
-      {data?.pending && data.pending.length > 0 ? (
-        <Card>
-          {data.pending.map((row) => (
-            <ListRow
-              key={row.id}
-              title={`${row.title} ${row.subtitle ?? ''}`}
-              subtitle={`${row.document_date ?? ''} • ${t('offline.proposal')}`}
-              badge={<StatusBadge status={row.status} risk="HIGH" />}
-            />
-          ))}
-        </Card>
-      ) : null}
 
       <Card>
         {data && data.rows.length > 0 ? (

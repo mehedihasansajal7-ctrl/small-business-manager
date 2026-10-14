@@ -69,7 +69,10 @@ export function CycleDetailScreen({ navigation, route }: Props) {
     if (!actor) return;
     setClosing(true);
     try {
-      await closeCycleOffline(actor, { ...(remainingQuantity.trim() ? { remainingQuantity: remainingQuantity.trim() } : {}) });
+      await closeCycleOffline(actor, {
+        cycleId,
+        ...(remainingQuantity.trim() ? { remainingQuantity: remainingQuantity.trim() } : {}),
+      });
       if (online) void syncNow();
       reload();
     } catch (caught) {

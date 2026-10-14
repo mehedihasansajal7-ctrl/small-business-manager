@@ -14,6 +14,7 @@ import {
   DEFAULT_MAX_ATTEMPTS,
 } from '../src/offline/outbox';
 import type { PushResultRow } from '../src/api/types';
+import type { OutboxEvent } from '@sbm/domain';
 
 const context = { businessId: 'biz-1', actorId: 'user-1', deviceId: 'device-a' };
 
@@ -135,7 +136,7 @@ describe('outbox: applying push results', () => {
 
   it('backs off a transport failure and finally asks for attention', () => {
     const created = event();
-    let current = created;
+    let current: OutboxEvent = created;
     const now = new Date('2026-04-10T11:00:00.000Z');
     for (let attempt = 1; attempt <= DEFAULT_MAX_ATTEMPTS; attempt += 1) {
       current = applyPushResult(current, null, { now, random: () => 0.5 });
@@ -163,7 +164,8 @@ describe('outbox: applying push results', () => {
       { ...event({ aggregateId: 'e' }), status: 'REJECTED' as const },
     ];
     const summary = summarize(events);
-    expect(summary.pending).toBe(3);
+    // pendingCount = PENDING + SYNCING + NEEDS_ATTENTION (a conflict needs a decision, not a retry).
+    expect(summary.pending).toBe(2);
     expect(summary.conflicts).toBe(1);
     expect(summary.needsAttention).toBe(2);
     expect(summary.counts.SYNCED).toBe(1);

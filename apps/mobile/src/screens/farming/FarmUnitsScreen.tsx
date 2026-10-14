@@ -1,6 +1,6 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useCallback } from 'react';
-import { View } from 'react-native';
+import { Text, View } from 'react-native';
 
 import { FARM_UNIT_KINDS } from '@sbm/domain';
 
@@ -38,7 +38,9 @@ export function FarmUnitsScreen({ navigation, route }: Props) {
   const { data, loading, reload } = useAsyncData(loader, [loader]);
   useReloadOnFocus(reload);
 
-  const kindLabels = new Map(FARM_UNIT_KINDS.map((entry) => [entry.kind, language === 'bn' ? entry.nameBn : entry.name]));
+  // Typed `string` (not `FarmUnitKind`) because the mirrored row's `kind` is a
+  // plain column value; the picker labels come from the domain's FARM_UNIT_KINDS.
+  const kindLabels = new Map<string, string>(FARM_UNIT_KINDS.map((entry) => [String(entry.kind), language === 'bn' ? entry.nameBn : entry.name]));
 
   return (
     <Screen
@@ -80,7 +82,7 @@ export function FarmUnitsScreen({ navigation, route }: Props) {
       <SectionTitle title={t('farming.newCycle')} />
       <Button label={t('farming.newCycle')} variant="secondary" onPress={() => navigation.navigate('NewCycle', { farmId })} fullWidth />
       <Notice tone="info" body={t('offline.coreWorksOffline')} />
-      <Text style={[typography.caption, { color: colors.textMuted, marginTop: spacing.md }]}>{kindLabels.size} unit kinds available</Text>
+      <Text style={[typography.caption, { color: colors.textMuted, marginTop: spacing.md }]}>{`${kindLabels.size} ${t('farming.units')}`}</Text>
     </Screen>
   );
 }

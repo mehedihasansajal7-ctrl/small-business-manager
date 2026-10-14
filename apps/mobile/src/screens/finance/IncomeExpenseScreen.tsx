@@ -78,8 +78,6 @@ export function IncomeExpenseScreen({ navigation, route }: Props) {
     }
   };
 
-  void customerId;
-
   return (
     <Screen title={kind === 'INCOME' ? t('finance.income') : t('finance.expense')} subtitle={business?.name}>
       {!online ? <OfflineCapabilityNote /> : null}

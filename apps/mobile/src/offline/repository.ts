@@ -998,36 +998,22 @@ export async function recordPartnerCapital(
   );
 }
 
-export async function adjustStock(
-  actor: Actor,
-  input: { itemId: string; direction: 'IN' | 'OUT'; quantity: string; unit: string; reason: string; currency: string; unitCost?: string; allowNegative?: boolean },
-) {
-  const currency = input.currency.toUpperCase();
-  const quantity = normalizeQuantity(input.quantity);
-  return withTransaction((tx) =>
-    enqueueWithin(
-      tx,
-      {
-        businessId: actor.businessId,
-        actorId: actor.actorId,
-        aggregateType: 'stock_movement',
-        aggregateId: globalThis.crypto.randomUUID(),
-        eventType: 'stock.adjust',
-        payload: {
-          itemId: input.itemId,
-          direction: input.direction,
-          quantity,
-          unit: input.unit,
-          reason: input.reason,
-          currency,
-          ...(input.unitCost ? { unitCost: normalizeMoneyInput(currency, input.unitCost) } : {}),
-          ...(input.allowNegative ? { allowNegative: true } : {}),
-        },
-      },
-      { title: `${input.direction === 'IN' ? 'Stock in' : 'Stock out'}`, subtitle: input.reason, amount: quantity, documentDate: new Date().toISOString().slice(0, 10) },
-    ),
-  );
-}
+/**
+ * Stock adjustment is **not** offered as an offline write, and that is a deliberate
+ * contract decision rather than a gap.
+ *
+ * `SyncService.applyEvent` in `apps/api/src/sync.ts` handles `sale.post`,
+ * `purchase.receive`, the finance events, the farming events, `harvest.post`,
+ * `cycle.*`, `cost.allocate` and the three master-data upserts. It has **no**
+ * `stock.adjust` case, so queueing an adjustment would come back as
+ * `REJECTED / UNKNOWN_EVENT` — a confusing failure for something that can simply
+ * be done online through `POST /api/inventory/adjust` (which is exactly what
+ * `StockAdjustScreen` calls, and which asserts `inventory.adjust` plus
+ * `inventory.adjust.approve` for a negative-stock override).
+ *
+ * If offline adjustments are ever wanted, add the event type to the server's
+ * switch first, then restore a queueing helper here.
+ */
 
 // --- farming ---------------------------------------------------------------
 
@@ -1432,23 +1418,21 @@ export interface ProposalsFor {
   readonly sales: ProposalRow[];
   readonly purchases: ProposalRow[];
   readonly expenses: ProposalRow[];
-  readonly stock: ProposalRow[];
   readonly farming: ProposalRow[];
   readonly harvests: ProposalRow[];
   readonly cycles: ProposalRow[];
 }
 
 export async function localProposals(businessId: string): Promise<ProposalsFor> {
-  const [sales, purchases, expenses, stock, farming, harvests, cycles] = await Promise.all([
+  const [sales, purchases, expenses, farming, harvests, cycles] = await Promise.all([
     proposals(businessId, 'sale'),
     proposals(businessId, 'purchase'),
     proposals(businessId, 'income_expense'),
-    proposals(businessId, 'stock_movement'),
     proposals(businessId, 'farming_event'),
     proposals(businessId, 'harvest'),
     proposals(businessId, 'production_cycle'),
   ]);
-  return { sales, purchases, expenses, stock, farming, harvests, cycles };
+  return { sales, purchases, expenses, farming, harvests, cycles };
 }
 
 /** Kept for symmetry with the server's "unsold harvest stays inventory" note. */

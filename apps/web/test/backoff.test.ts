@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { retryDelayMs } from '@sbm/domain';
+import { retryDelayMs, type OutboxEvent } from '@sbm/domain';
 import { applyPushResult, buildEvent } from '../src/offline/outbox';
 
 const context = { businessId: 'biz-1', actorId: 'user-1', deviceId: 'device-a' };
@@ -14,7 +14,10 @@ describe('exponential backoff with jitter', () => {
     expect(retryDelayMs(1, options)).toBe(1_000);
     expect(retryDelayMs(2, options)).toBe(2_000);
     expect(retryDelayMs(3, options)).toBe(4_000);
-    expect(retryDelayMs(10, options)).toBe(15 * 60_000);
+    // 1s x 2^9 = 512s, still below the 15 minute ceiling.
+    expect(retryDelayMs(10, options)).toBe(512_000);
+    // …and it never exceeds the ceiling, however many attempts have failed.
+    expect(retryDelayMs(20, options)).toBe(15 * 60_000);
     expect(retryDelayMs(50, options)).toBe(15 * 60_000);
   });
 
@@ -33,12 +36,13 @@ describe('exponential backoff with jitter', () => {
     expect(first.nextAttemptAt).toBe('2026-04-10T11:00:01.000Z');
 
     const second = applyPushResult(first, null, { now, random: () => 0.5, baseDelayMs: 1_000 });
-    expect(second.nextAttemptAt).toBe('2026-04-10T11:00:03.000Z');
+    expect(second.attempts).toBe(2);
+    expect(second.nextAttemptAt).toBe('2026-04-10T11:00:02.000Z');
   });
 
   it('throws nothing and stays PENDING until the attempt budget is exhausted', () => {
     const now = new Date('2026-04-10T11:00:00.000Z');
-    let current = baseEvent();
+    let current: OutboxEvent = baseEvent();
     const statuses: string[] = [];
     for (let attempt = 0; attempt < 5; attempt += 1) {
       current = applyPushResult(current, null, { now, random: () => 0.5, maxAttempts: 3 });

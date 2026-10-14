@@ -44,6 +44,8 @@ export async function writeJsonPref(key: string, value: unknown): Promise<void> 
 export const PREF_KEYS = {
   locale: 'sbm.locale',
   theme: 'sbm.theme',
+  /** Last successful `/api/auth/me` + business load, so the app opens offline. */
+  authSnapshot: 'sbm.auth.snapshot',
   activeBusinessId: 'sbm.business.active',
   lastOutboxCount: 'sbm.outbox.lastCount',
   onboardingDone: 'sbm.onboarding.done',
