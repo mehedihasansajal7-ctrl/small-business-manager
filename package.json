@@ -13,15 +13,17 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "typecheck": "npm run typecheck -ws --if-present",
-    "build": "npm run build -ws --if-present",
-    "test": "npm run test -ws --if-present",
+    "build:domain": "npm run build -w @sbm/domain",
+    "typecheck": "npm run build:domain && npm run typecheck -ws --if-present",
+    "build": "npm run build:domain && npm run build -w @sbm/api && npm run build -w @sbm/web",
+    "test": "npm run build:domain && npm run test -ws --if-present",
     "verify": "npm run typecheck && npm run test",
-    "api": "npm run start -w @sbm/api",
-    "api:dev": "npm run dev -w @sbm/api",
-    "web:dev": "npm run dev -w @sbm/web",
-    "web:build": "npm run build -w @sbm/web",
-    "seed": "node apps/api/dist/seed.js"
+    "api": "npm run build:domain && npm run start -w @sbm/api",
+    "api:dev": "npm run build:domain && npm run dev -w @sbm/api",
+    "web:dev": "npm run build:domain && npm run dev -w @sbm/web",
+    "web:build": "npm run build:domain && npm run build -w @sbm/web",
+    "seed": "npm run build:domain && node apps/api/dist/seed.js",
+    "supabase:test": "npm --prefix supabase run test"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
