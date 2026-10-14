@@ -533,6 +533,9 @@ export function buildRouter(deps: RouteDeps): Router {
     return { exportedAt: new Date().toISOString(), businessId: caller.business.id, format: 'sbm-backup-v1', tables: dump };
   });
 
+  // Restore into an EMPTY workspace only; validated and atomic (see repository).
+  router.post('/api/reports/restore', (ctx) => repo.restoreBackup(requireCaller(ctx), ctx.body ?? {}));
+
   // -------------------------------------------------------------------- sync
 
   router.post('/api/sync/push', (ctx) => {
@@ -639,6 +642,32 @@ export function buildRouter(deps: RouteDeps): Router {
       String(ctx.params.entityType),
       String(ctx.params.entityId),
     ]);
+  });
+
+  // Attachment bytes. Membership is re-checked here, so a guessed id is useless.
+  router.get('/api/attachments/:entityType/:entityId/:attachmentId/content', async (ctx) => {
+    const caller = requireCaller(ctx);
+    const row = repo.db.get<{ file_name: string; mime: string; stored_path: string; checksum: string }>(
+      'SELECT file_name, mime, stored_path, checksum FROM attachments WHERE id = ? AND business_id = ? AND entity_type = ? AND entity_id = ?',
+      [String(ctx.params.attachmentId), caller.business.id, String(ctx.params.entityType), String(ctx.params.entityId)],
+    );
+    if (!row) throw HttpError.notFound('Attachment not found');
+    const { readFileSync, existsSync } = await import('node:fs');
+    const { createHash } = await import('node:crypto');
+    if (!existsSync(row.stored_path)) throw HttpError.notFound('The stored file is missing from the server');
+    const bytes = readFileSync(row.stored_path);
+    // Verify integrity before serving: a tampered file is refused, not handed out.
+    if (createHash('sha256').update(bytes).digest('hex') !== row.checksum) {
+      throw new HttpError(500, 'ATTACHMENT_CORRUPT', `Attachment ${String(ctx.params.attachmentId)} failed its checksum check`);
+    }
+    ctx.res.writeHead(200, {
+      'content-type': row.mime,
+      'content-length': bytes.length,
+      'content-disposition': `inline; filename="${row.file_name.replace(/"/g, '')}"`,
+      'cache-control': 'no-store',
+    });
+    ctx.res.end(bytes);
+    return undefined;
   });
 
   return router;

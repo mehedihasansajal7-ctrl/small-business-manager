@@ -33,6 +33,23 @@ class Client {
   patch = (path: string, body?: unknown) => this.request('PATCH', path, body);
   put = (path: string, body?: unknown) => this.request('PUT', path, body);
   del = (path: string) => this.request('DELETE', path);
+
+  /** Raw byte upload (attachments are not JSON). */
+  async upload(path: string, bytes: Uint8Array, contentType: string): Promise<{ status: number; body: any }> {
+    const response = await fetch(`${this.base}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': contentType, ...(this.cookie ? { cookie: this.cookie } : {}) },
+      body: bytes as unknown as BodyInit,
+    });
+    const setCookie = response.headers.get('set-cookie');
+    if (setCookie) this.cookie = setCookie.split(';')[0] as string;
+    const text = await response.text();
+    try {
+      return { status: response.status, body: JSON.parse(text) };
+    } catch {
+      return { status: response.status, body: text };
+    }
+  }
 }
 
 function client(): Client {
@@ -743,6 +760,112 @@ describe('corrections and master data', () => {
     const restricted = await viewer.get('/api/reports/stock-valuation');
     expect(restricted.status).toBe(200);
     expect((restricted.body.rows as { value?: string }[])[0]?.value).toBeUndefined();
+  });
+});
+
+describe('backup restore and attachment download', () => {
+  it('restores a backup into a fresh workspace and reproduces the same books', async () => {
+    const source = await setupBusiness('restore.source@test.sbm');
+    await source.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '2000', lines: [{ productId: source.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    await source.client.post('/api/sales', { documentDate: '2026-04-05', cashReceived: '3400', lines: [{ productId: source.productId, quantity: '50', unit: 'kg', unitPrice: '68' }] });
+    const backup = await source.client.get<{ format: string; tables: Record<string, unknown[]> }>('/api/reports/backup');
+    expect(backup.body.format).toBe('sbm-backup-v1');
+
+    const sourcePnl = await source.client.get<{ netRevenue: string; costOfGoodsSold: string; netProfit: string }>('/api/reports/profit-loss?from=2026-04-01&to=2026-04-30');
+    const sourceTrial = await source.client.get<{ totalDebit: string }>('/api/reports/trial-balance?from=2026-04-01&to=2026-04-30');
+    const sourceStock = await source.client.get<{ itemId: string; onHand: string }[]>('/api/inventory');
+    const sourceOnHand = sourceStock.body.find((row) => row.itemId === source.productId)?.onHand;
+    expect(sourceOnHand).toBe('50');
+
+    // A brand new, empty workspace owned by the same person.
+    const target = client();
+    await target.post('/api/auth/register', { email: 'restore.target@test.sbm', password: 'password123', displayName: 'Restore Target' });
+    const business = await target.post<{ id: string }>('/api/businesses', { name: 'Restored Books' });
+
+    const restored = await target.post<{ totalRows: number; restored: Record<string, number>; note: string }>('/api/reports/restore', backup.body);
+    expect(restored.status).toBe(200);
+    expect(restored.body.restored.products).toBe(2);
+    expect(restored.body.restored.journal_lines).toBeGreaterThan(0);
+    expect(restored.body.totalRows).toBeGreaterThan(10);
+    expect(restored.body.note).toMatch(/re-keyed|not restored/i);
+
+    // The books reproduce exactly.
+    const targetPnl = await target.get<{ netRevenue: string; costOfGoodsSold: string; netProfit: string }>('/api/reports/profit-loss?from=2026-04-01&to=2026-04-30');
+    expect(targetPnl.body.netRevenue).toBe(sourcePnl.body.netRevenue);
+    expect(targetPnl.body.costOfGoodsSold).toBe(sourcePnl.body.costOfGoodsSold);
+    expect(targetPnl.body.netProfit).toBe(sourcePnl.body.netProfit);
+    const targetTrial = await target.get<{ totalDebit: string; balanced: boolean }>('/api/reports/trial-balance?from=2026-04-01&to=2026-04-30');
+    expect(targetTrial.body.balanced).toBe(true);
+    expect(targetTrial.body.totalDebit).toBe(sourceTrial.body.totalDebit);
+
+    // Stock is carried over, and the restocked product has a NEW id (re-keyed)
+    // while keeping the same quantity.
+    const targetProducts = await target.get<{ id: string; name: string; onHand: string }[]>('/api/products');
+    const restoredRice = targetProducts.body.find((row) => row.name === 'Rice');
+    expect(restoredRice?.onHand).toBe(sourceOnHand);
+    expect(restoredRice?.id).not.toBe(source.productId);
+
+    // The restored ledger is independent of the source.
+    const targetSales = await target.get<{ reference: string }[]>('/api/sales');
+    expect(targetSales.body).toHaveLength(1);
+    expect(business.status).toBe(200);
+  });
+
+  it('refuses to restore into a workspace that already has data', async () => {
+    const owner = await setupBusiness('restore.busy@test.sbm');
+    await owner.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: owner.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    const backup = await owner.client.get<{ tables: Record<string, unknown[]> }>('/api/reports/backup');
+    const result = await owner.client.post<{ error: { code: string; message: string } }>('/api/reports/restore', backup.body);
+    expect(result.status).toBe(409);
+    expect(result.body.error.code).toBe('WORKSPACE_NOT_EMPTY');
+  });
+
+  it('refuses to restore a backup whose journal does not balance', async () => {
+    const owner = await setupBusiness('restore.bad@test.sbm');
+    const backup = await owner.client.get<{ tables: Record<string, unknown[]> }>('/api/reports/backup');
+    const tampered = structuredClone(backup.body);
+    tampered.tables.purchases = [{ id: 'x', business_id: 'y', reference: 'P1', document_date: '2026-04-01', currency: 'BDT', subtotal: '10', tax: '0', total: '10', paid: '0', payable: '10', status: 'POSTED', revision: 1, created_by: 'u', event_id: 'e1', created_at: '2026-04-01', updated_at: '2026-04-01' }];
+    tampered.tables.journal_entries = [{ id: 'j1', business_id: 'y', document_date: '2026-04-01', reference: 'P1', description: 'Tampered', source_type: 'PURCHASE', source_id: 'P1', currency: 'BDT', posted_by: 'u', event_id: 'e2', created_at: '2026-04-01' }];
+    tampered.tables.journal_lines = [
+      { id: 'l1', business_id: 'y', entry_id: 'j1', account: '1200', debit: '10', credit: '0', currency: 'BDT' },
+      { id: 'l2', business_id: 'y', entry_id: 'j1', account: '2000', debit: '0', credit: '9', currency: 'BDT' },
+    ];
+
+    const target = client();
+    await target.post('/api/auth/register', { email: 'restore.bad.target@test.sbm', password: 'password123', displayName: 'Bad Target' });
+    await target.post('/api/businesses', { name: 'Bad Books' });
+    const result = await target.post<{ error: { code: string; message: string } }>('/api/reports/restore', tampered);
+    expect(result.status).toBe(400);
+    expect(result.body.error.code).toBe('UNBALANCED_BACKUP');
+
+    // And nothing at all was written.
+    const products = await target.get<unknown[]>('/api/products');
+    expect(products.body).toHaveLength(0);
+  });
+
+  it('serves attachment bytes only to the owning business and verifies the checksum', async () => {
+    const owner = await setupBusiness('dl.owner@test.sbm');
+    const bytes = new TextEncoder().encode('%PDF-1.4 pretend invoice');
+    const upload = await owner.client.upload(`/api/attachments/invoice/INV-1?fileName=invoice.pdf`, bytes, 'application/pdf');
+    expect(upload.status).toBe(200);
+    expect(upload.body.checksum).toHaveLength(64);
+
+    const download = await owner.client.request('GET', `/api/attachments/invoice/INV-1/${upload.body.id}/content`, undefined, { raw: true });
+    expect(download.status).toBe(200);
+    expect(String(download.body)).toContain('%PDF-1.4 pretend invoice');
+
+    // Another business cannot fetch it, even with the exact id.
+    const stranger = await setupBusiness('dl.stranger@test.sbm');
+    const denied = await stranger.client.request('GET', `/api/attachments/invoice/INV-1/${upload.body.id}/content`, undefined, { raw: true });
+    expect(denied.status).toBe(404);
+
+    // A tampered file on disk is refused rather than served.
+    const stored = app.db.get<{ stored_path: string }>('SELECT stored_path FROM attachments WHERE id = ?', [upload.body.id]);
+    expect(stored).toBeTruthy();
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync((stored as { stored_path: string }).stored_path, 'tampered');
+    const corrupt = await owner.client.request('GET', `/api/attachments/invoice/INV-1/${upload.body.id}/content`, undefined, { raw: true });
+    expect(corrupt.status).toBe(500);
   });
 });
 

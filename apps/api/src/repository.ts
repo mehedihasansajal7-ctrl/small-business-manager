@@ -1479,6 +1479,188 @@ export class Repository {
     return this.db.get<Record<string, unknown>>(`SELECT * FROM ${table} WHERE id = ?`, [id]) as Record<string, unknown>;
   }
 
+  // -------------------------------------------------------------------------
+  // Backup restore (into a freshly created workspace only)
+  // -------------------------------------------------------------------------
+
+  /** Tables that can be restored, in foreign-key-safe insertion order. */
+  private static readonly RESTORE_ORDER: readonly string[] = [
+    'locations', 'product_categories', 'products', 'customers', 'suppliers', 'explicit_conversions',
+    'stock_lots', 'stock_movements', 'purchases', 'purchase_lines', 'sales', 'sale_lines',
+    'payments', 'account_transfers', 'income_expenses', 'partner_capital',
+    'journal_entries', 'journal_lines',
+    'farms', 'farm_units', 'production_cycles', 'farming_events', 'cost_sources', 'cost_allocations',
+    'harvests', 'observations', 'mortality_losses', 'financial_accounts', 'business_settings',
+  ];
+
+  /**
+   * Columns that hold a reference but are NOT declared as a foreign key.
+   * They still have to be remapped on restore or a restored record would point
+   * at a row that no longer exists.
+   */
+  private static readonly RESTORE_REFERENCE_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
+    harvests: { product_id: 'products', location_id: 'locations' },
+    farming_events: { product_id: 'products' },
+    stock_movements: { reversal_of: 'stock_movements' },
+    journal_entries: { reversal_of: 'journal_entries' },
+    production_cycles: { responsible_member_id: 'members' },
+    // A payment's party is either a customer or a supplier.
+    payments: { party_id: 'customers+suppliers' },
+  });
+
+  /**
+   * Restore a backup produced by `GET /api/reports/backup`.
+   *
+   * Safety rules, all enforced before anything is written:
+   *  - owner only;
+   *  - the target workspace must be EMPTY (no documents), so a restore can never
+   *    merge into or overwrite live books;
+   *  - the payload must declare the expected format;
+   *  - every restored journal entry must still balance, or the whole restore is
+   *    refused (a backup that cannot be trusted is not applied);
+   *  - the whole import runs in ONE transaction, so a failure leaves nothing behind.
+   *
+   * Because ids are global primary keys, every restored row is RE-KEYED with a new
+   * id and all foreign keys (declared and known textual references) are remapped,
+   * so a restore works even into the same database the backup came from.
+   *
+   * Identity rows (users, members, sessions, invites) are deliberately NOT
+   * restored: people are re-invited, and an audit log is never rewritten.
+   */
+  restoreBackup(caller: Caller, payload: unknown): Record<string, unknown> {
+    this.assertPermission(caller, 'backup.manage');
+    if (caller.role !== 'owner') throw HttpError.forbidden('Only the owner can restore a backup into this workspace');
+
+    const body = asRecord(payload, 'backup');
+    if (body.format !== 'sbm-backup-v1') {
+      throw HttpError.badRequest('VALIDATION', `Unsupported backup format ${JSON.stringify(body.format)}; expected "sbm-backup-v1"`);
+    }
+    const tables = asRecord(body.tables, 'tables');
+
+    // 1. The workspace must be empty.
+    const nonEmpty: string[] = [];
+    for (const table of ['products', 'sales', 'purchases', 'journal_entries', 'stock_movements', 'production_cycles']) {
+      const count = this.db.get<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table} WHERE business_id = ?`, [caller.business.id])?.count ?? 0;
+      if (count > 0) nonEmpty.push(`${table} (${count})`);
+    }
+    if (nonEmpty.length > 0) {
+      throw HttpError.conflict('WORKSPACE_NOT_EMPTY', `Restore is only allowed into an empty workspace. Found: ${nonEmpty.join(', ')}. Create a new business and restore there.`);
+    }
+
+    // 2. Validate the journal before writing anything.
+    const journalEntries = Array.isArray(tables.journal_entries) ? (tables.journal_entries as Record<string, unknown>[]) : [];
+    const journalLines = Array.isArray(tables.journal_lines) ? (tables.journal_lines as Record<string, unknown>[]) : [];
+    const byEntry = new Map<string, { debit: Decimal; credit: Decimal }>();
+    for (const line of journalLines) {
+      const entryId = String(line.entry_id ?? '');
+      const current = byEntry.get(entryId) ?? { debit: Decimal.ZERO, credit: Decimal.ZERO };
+      byEntry.set(entryId, {
+        debit: current.debit.add(dec(String(line.debit ?? '0'))),
+        credit: current.credit.add(dec(String(line.credit ?? '0'))),
+      });
+    }
+    const unbalanced = journalEntries.filter((entry) => {
+      const totals = byEntry.get(String(entry.id ?? ''));
+      if (!totals) return true;
+      return !totals.debit.eq(totals.credit);
+    });
+    if (unbalanced.length > 0) {
+      throw HttpError.badRequest(
+        'UNBALANCED_BACKUP',
+        `Refusing to restore: ${unbalanced.length} journal entry(ies) in this backup do not balance (e.g. ${String(unbalanced[0]?.reference ?? unbalanced[0]?.id)}).`,
+      );
+    }
+
+    // 3. Re-key every id and map every reference onto the new ids.
+    const idMap = new Map<string, string>(); // `${table}:${oldId}` -> newId
+    const newIdFor = (table: string, oldId: unknown): string | null => {
+      if (oldId === null || oldId === undefined || oldId === '') return null;
+      const key = `${table}:${String(oldId)}`;
+      const existing = idMap.get(key);
+      if (existing) return existing;
+      const created = this.id();
+      idMap.set(key, created);
+      return created;
+    };
+    for (const table of Repository.RESTORE_ORDER) {
+      const rows = tables[table];
+      if (!Array.isArray(rows)) continue;
+      for (const raw of rows as Record<string, unknown>[]) {
+        if (raw.id !== undefined && raw.id !== null) newIdFor(table, raw.id);
+      }
+    }
+    // Members are not restored, so anything pointing at a member is attributed to
+    // the owner who is performing the restore.
+    const memberMap = new Map<string, string>();
+    for (const member of (Array.isArray(tables.members) ? (tables.members as Record<string, unknown>[]) : [])) {
+      if (member.id !== undefined) memberMap.set(String(member.id), caller.member.id);
+    }
+
+    const remap = (refTable: string, value: unknown): unknown => {
+      if (value === null || value === undefined || value === '') return value ?? null;
+      if (refTable === 'members') return memberMap.get(String(value)) ?? caller.member.id;
+      if (refTable === 'customers+suppliers') {
+        return idMap.get(`customers:${String(value)}`) ?? idMap.get(`suppliers:${String(value)}`) ?? null;
+      }
+      return idMap.get(`${refTable}:${String(value)}`) ?? null;
+    };
+
+    // 4. Import inside a single transaction.
+    const inserted: Record<string, number> = {};
+    return this.db.transaction(() => {
+      for (const table of Repository.RESTORE_ORDER) {
+        const rows = tables[table];
+        if (!Array.isArray(rows) || rows.length === 0) {
+          inserted[table] = 0;
+          continue;
+        }
+        const columns = this.db.all<{ name: string }>(`PRAGMA table_info(${table})`).map((row) => row.name);
+        const declaredFks = new Map(
+          this.db.all<{ from: string; table: string }>(`PRAGMA foreign_key_list(${table})`).map((fk) => [fk.from, fk.table]),
+        );
+        const overrides = Repository.RESTORE_REFERENCE_OVERRIDES[table] ?? {};
+        let count = 0;
+        for (const raw of rows as Record<string, unknown>[]) {
+          const keys = Object.keys(raw).filter((key) => columns.includes(key) && key !== 'business_id');
+          const newRowId = newIdFor(table, raw.id) as string;
+          const values: (string | number | bigint | null | Buffer)[] = [];
+          for (const key of keys) {
+            if (key === 'id') {
+              values.push(newRowId);
+              continue;
+            }
+            // Globally-unique bookkeeping columns (event ids, idempotency keys) are
+            // re-derived from the new row id, so a restore can never collide with
+            // the rows it was exported from.
+            if (key === 'event_id' || key === 'idempotency_key') {
+              values.push(`${newRowId}:${key}`);
+              continue;
+            }
+            const refTable = overrides[key] ?? declaredFks.get(key);
+            values.push(refTable ? (remap(refTable, raw[key]) as string | null) : normaliseCell(raw[key]));
+          }
+          const placeholders = ['?', ...keys.map(() => '?')].join(', ');
+          this.db.run(`INSERT INTO ${table} (business_id, ${keys.join(', ')}) VALUES (${placeholders})`, [caller.business.id, ...values]);
+          count += 1;
+        }
+        inserted[table] = count;
+      }
+      this.audit({
+        businessId: caller.business.id,
+        actorId: caller.user.id,
+        action: 'backup.restore',
+        entityType: 'business',
+        entityId: caller.business.id,
+        detail: { source: body.exportedAt ?? null, tables: Object.keys(inserted).length, rows: Object.values(inserted).reduce((a, b) => a + b, 0) },
+      });
+      return {
+        restored: inserted,
+        totalRows: Object.values(inserted).reduce((a, b) => a + b, 0),
+        note: 'Documents were re-keyed with new ids and every reference was remapped. Members, users and the audit log were NOT restored: re-invite your partners and check Reports after the import.',
+      };
+    });
+  }
+
   /** Stock valuation report: quantity, weighted-average unit cost and total value. */
   stockValuationReport(caller: Caller, locationId?: string) {
     this.assertPermission(caller, 'inventory.view');
@@ -2470,6 +2652,15 @@ export class Repository {
 function asRecordArray(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) throw HttpError.badRequest('VALIDATION', 'targets must be an array');
   return value.map((item) => asRecord(item, 'target'));
+}
+
+/** SQLite only accepts null, number, string, bigint or Buffer as a bound value. */
+function normaliseCell(value: unknown): string | number | bigint | null | Buffer {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return value;
+  if (Buffer.isBuffer(value)) return value;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  return JSON.stringify(value);
 }
 
 function defaultAccountForEvent(eventType: string): string {

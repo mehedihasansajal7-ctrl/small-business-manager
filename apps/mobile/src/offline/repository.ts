@@ -3,7 +3,6 @@ import {
   balanceSheet,
   cashFlow,
   dec,
-  isZeroMoney,
   money,
   profitAndLoss,
   stockBalance,
@@ -27,9 +26,8 @@ import type {
   CycleView,
   FarmView,
   FarmingEventView,
-  HarvestResult,
 } from '../api/types';
-import { META_KEYS, all, first, getMeta, withTransaction, type Tx } from './db';
+import { META_KEYS, all, first, getMeta, withTransaction } from './db';
 import { enqueueWithin, proposals, type ProposalRow } from './outbox';
 
 /**
@@ -352,15 +350,13 @@ export async function localPurchases(from?: IsoDate, to?: IsoDate): Promise<Purc
 }
 
 export async function localReceivable(customerId: string, currency: string): Promise<Decimal> {
-  const sales = await all<{ net: string; cash_received: string }>('SELECT net, cash_received FROM sales WHERE customer_id = ?', [customerId]);
-  const receipts = await all<{ amount: string }>(`SELECT amount FROM journalSink WHERE 0`);
-  void receipts;
-  const billed = sales.reduce((acc, row) => acc.add(dec(row.net).sub(dec(row.cash_received))), Decimal.ZERO);
-  // Customer receipts are only reflected through the journal/RECEIVABLE account
-  // on the server; offline we can only subtract what the mirror knows about, so
-  // the value is labelled "as of last sync" wherever it is displayed.
   void currency;
-  return billed;
+  // What the mirror can prove: unpaid invoice balances. Customer receipts are not
+  // part of the sync pull (they are posted as journal/payment rows server-side),
+  // so a receipt recorded after the last pull is not yet reflected here. Every
+  // screen that shows this value labels it "as of last sync" for that reason.
+  const sales = await all<{ net: string; cash_received: string }>('SELECT net, cash_received FROM sales WHERE customer_id = ?', [customerId]);
+  return sales.reduce((acc, row) => acc.add(dec(row.net).sub(dec(row.cash_received))), Decimal.ZERO);
 }
 
 export async function localPayable(supplierId: string, currency: string): Promise<Decimal> {
@@ -521,8 +517,14 @@ export async function localCycles(status?: string): Promise<CycleView[]> {
     rows.map(async (row) => {
       const harvested = await all<{ quantity: string }>('SELECT quantity FROM harvests WHERE cycle_id = ?', [String(row.id)]);
       const total = harvested.reduce((acc, item) => acc.add(dec(item.quantity)), Decimal.ZERO);
-      const costs = await all<{ amount: string }>('SELECT amount FROM cost_allocations WHERE cycle_id = ?', [String(row.id)]);
-      const allocated = costs.reduce((acc, item) => acc.add(dec(item.amount)), Decimal.ZERO);
+      // Offline cost-to-date = direct farming-event costs + allocated shared cost.
+      // (The server computes the same total from `cost_sources` + `cost_allocations`;
+      // both of those are derived from exactly these two mirrored sources.)
+      const directCosts = await all<{ amount: string }>(`SELECT amount FROM farming_events WHERE cycle_id = ? AND amount IS NOT NULL`, [String(row.id)]);
+      const allocations = await all<{ amount: string }>('SELECT amount FROM cost_allocations WHERE cycle_id = ?', [String(row.id)]);
+      const costToDate = directCosts
+        .reduce((acc, item) => acc.add(dec(item.amount)), Decimal.ZERO)
+        .add(allocations.reduce((acc, item) => acc.add(dec(item.amount)), Decimal.ZERO));
       const revenue = await localCycleRevenue(String(row.id), currency);
       return {
         id: String(row.id),
@@ -541,7 +543,7 @@ export async function localCycles(status?: string): Promise<CycleView[]> {
         startingPopulation: (row.starting_population as string) ?? null,
         harvestedQuantity: total.toString(),
         revenue: revenue.toString(),
-        costToDate: allocated.toString(),
+        costToDate: costToDate.round(2, 'HALF_UP').toString(),
       } satisfies CycleView;
     }),
   );
@@ -708,6 +710,12 @@ export interface OfflineSaleInput {
   readonly discount?: string;
   readonly cashReceived?: string;
   readonly note?: string;
+  /**
+   * Client id for the new sale. Generated up front by the POS screen so a photo
+   * can be attached to the same id before the record has synced (attachments are
+   * queued separately and must never block the transaction).
+   */
+  readonly aggregateId?: string;
   readonly lines: readonly OfflineSaleLine[];
 }
 
@@ -749,7 +757,7 @@ export async function recordSale(actor: Actor, input: OfflineSaleInput) {
         businessId: actor.businessId,
         actorId: actor.actorId,
         aggregateType: 'sale',
-        aggregateId: globalThis.crypto.randomUUID(),
+        aggregateId: input.aggregateId ?? globalThis.crypto.randomUUID(),
         eventType: 'sale.post',
         payload,
       },
@@ -780,6 +788,8 @@ export interface OfflinePurchaseInput {
   readonly accountCode?: string;
   readonly paid?: string;
   readonly note?: string;
+  /** Client id, so an invoice photo can be attached before the record syncs. */
+  readonly aggregateId?: string;
   readonly lines: readonly OfflinePurchaseLine[];
 }
 
@@ -814,7 +824,7 @@ export async function recordPurchase(actor: Actor, input: OfflinePurchaseInput) 
         businessId: actor.businessId,
         actorId: actor.actorId,
         aggregateType: 'purchase',
-        aggregateId: globalThis.crypto.randomUUID(),
+        aggregateId: input.aggregateId ?? globalThis.crypto.randomUUID(),
         eventType: 'purchase.receive',
         payload,
       },
@@ -1180,6 +1190,8 @@ export async function recordHarvest(
     locationId?: string;
     grade?: string;
     notes?: string;
+    /** Client id, so a harvest photo can be attached before the record syncs. */
+    aggregateId?: string;
   },
 ) {
   const quantity = normalizeQuantity(input.quantity);
@@ -1190,7 +1202,7 @@ export async function recordHarvest(
         businessId: actor.businessId,
         actorId: actor.actorId,
         aggregateType: 'harvest',
-        aggregateId: globalThis.crypto.randomUUID(),
+        aggregateId: input.aggregateId ?? globalThis.crypto.randomUUID(),
         eventType: 'harvest.post',
         payload: {
           cycleId: input.cycleId,
@@ -1442,6 +1454,85 @@ export async function localProposals(businessId: string): Promise<ProposalsFor> 
 /** Kept for symmetry with the server's "unsold harvest stays inventory" note. */
 export const HARVEST_NOTE = 'Unsold harvest stays in finished-goods inventory; profit is recognised only when sold.';
 
-export function isZero(value: string): boolean {
-  return isZeroMoney(money('BDT', value));
+export interface LocalCycleProfit {
+  readonly cycleId: string;
+  readonly reference: string;
+  readonly title: string;
+  readonly farmingType: string;
+  readonly currency: string;
+  readonly costToDate: string;
+  readonly costBreakdown: readonly { readonly kind: string; readonly amount: string }[];
+  readonly harvestedQuantity: string;
+  readonly outputUnit: string;
+  readonly assignedToFinishedStock: string;
+  readonly costRemainingInBatch: string;
+  readonly revenue: string;
+  readonly cogs: string;
+  readonly grossProfit: string;
+  readonly costInUnsoldOutput: string;
+}
+
+/**
+ * Offline cycle profit.
+ *
+ * Mirrors `Repository.cycleProfitReport` line for line, from the mirror only:
+ *  - cost = farming-event costs + allocated shared cost,
+ *  - revenue/COGS are attributed through **real traceability** — the products
+ *    that were actually harvested from this cycle and then sold (the server does
+ *    exactly the same join, which is why the numbers agree),
+ *  - unsold output stays inventory at its assigned cost.
+ */
+export async function localCycleProfit(cycleId: string, currency: string): Promise<LocalCycleProfit | null> {
+  const cycle = await first<Record<string, unknown>>('SELECT * FROM production_cycles WHERE id = ?', [cycleId]);
+  if (!cycle) return null;
+
+  const eventCosts = await all<{ event_type: string; amount: string }>('SELECT event_type, amount FROM farming_events WHERE cycle_id = ? AND amount IS NOT NULL', [cycleId]);
+  const allocations = await all<{ amount: string }>('SELECT amount FROM cost_allocations WHERE cycle_id = ?', [cycleId]);
+  const harvests = await all<{ quantity: string; unit: string; cost_basis: string }>('SELECT quantity, unit, cost_basis FROM harvests WHERE cycle_id = ?', [cycleId]);
+
+  const byKind = new Map<string, Decimal>();
+  for (const row of eventCosts) byKind.set(row.event_type, (byKind.get(row.event_type) ?? Decimal.ZERO).add(dec(row.amount)));
+  const allocated = allocations.reduce((acc, row) => acc.add(dec(row.amount)), Decimal.ZERO);
+  if (!allocated.isZero()) byKind.set('OVERHEAD (allocated)', allocated);
+
+  const directTotal = [...byKind.entries()].reduce((acc, [, amount]) => acc.add(amount), Decimal.ZERO);
+  const costToDate = directTotal;
+
+  const harvestedQuantity = harvests.reduce((acc, row) => acc.add(dec(row.quantity)), Decimal.ZERO);
+  const assignedCost = harvests.reduce((acc, row) => acc.add(dec(row.cost_basis)), Decimal.ZERO);
+  const outputUnit = harvests[0]?.unit ?? (cycle.planned_output_unit as string) ?? 'unit';
+
+  const productIds = await all<{ product_id: string }>('SELECT DISTINCT product_id FROM harvests WHERE cycle_id = ? AND product_id IS NOT NULL', [cycleId]);
+  let revenue = Decimal.ZERO;
+  let cogs = Decimal.ZERO;
+  if (productIds.length > 0) {
+    const ids = productIds.map((row) => row.product_id);
+    const placeholders = ids.map(() => '?').join(', ');
+    const lines = await all<{ quantity: string; line_total: string; unit_cost: string; currency: string }>(
+      `SELECT quantity, line_total, unit_cost, currency FROM sale_lines WHERE product_id IN (${placeholders})`,
+      ids,
+    );
+    revenue = lines.reduce((acc, line) => acc.add(dec(line.line_total)), Decimal.ZERO);
+    cogs = lines.reduce((acc, line) => acc.add(dec(line.unit_cost).mul(dec(line.quantity))), Decimal.ZERO);
+  }
+
+  return {
+    cycleId,
+    reference: String(cycle.reference ?? ''),
+    title: String(cycle.title ?? ''),
+    farmingType: String(cycle.farming_type ?? ''),
+    currency,
+    costToDate: costToDate.round(2, 'HALF_UP').toString(),
+    costBreakdown: [...byKind.entries()]
+      .map(([kind, amount]) => ({ kind, amount: amount.round(2, 'HALF_UP').toString() }))
+      .sort((a, b) => dec(b.amount).compare(dec(a.amount))),
+    harvestedQuantity: harvestedQuantity.toString(),
+    outputUnit,
+    assignedToFinishedStock: assignedCost.round(2, 'HALF_UP').toString(),
+    costRemainingInBatch: costToDate.sub(assignedCost).round(2, 'HALF_UP').toString(),
+    revenue: revenue.round(2, 'HALF_UP').toString(),
+    cogs: cogs.round(2, 'HALF_UP').toString(),
+    grossProfit: revenue.sub(cogs).round(2, 'HALF_UP').toString(),
+    costInUnsoldOutput: assignedCost.sub(cogs).round(2, 'HALF_UP').toString(),
+  };
 }

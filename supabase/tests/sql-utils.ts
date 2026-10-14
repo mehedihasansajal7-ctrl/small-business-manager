@@ -5,10 +5,14 @@ import { dirname, join } from 'node:path';
 /**
  * Small SQL reader used by the schema/policy tests.
  *
- * It intentionally does *not* try to be a Postgres parser. It blanks comments
- * and string literals (keeping dollar-quoted function bodies, which are code)
- * and then applies narrow regular expressions, so each assertion is honest
- * about what it actually checks.
+ * It intentionally does NOT try to be a Postgres parser. It strips comments and
+ * (optionally) string literals / dollar-quoted bodies, then applies narrow
+ * regular expressions, so every assertion is honest about what it checks.
+ *
+ * Three sanitised views of each file are produced:
+ *   code : comments removed only          (identifiers AND literals visible)
+ *   sql  : comments + string literals removed, dollar bodies kept as code
+ *   ddl  : comments + literals + dollar bodies removed (pure DDL/text)
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -19,13 +23,15 @@ export const functionsDir = join(supabaseRoot, 'functions');
 export interface SqlFile {
   /** e.g. `0002_identity_tenancy.sql` */
   readonly name: string;
-  /** Raw file contents, comments included. */
+  /** Raw file contents. */
   readonly raw: string;
-  /** Comments + string literals blanked; dollar-quoted bodies kept as code. */
+  /** Comments removed; identifiers and literals intact. */
+  readonly code: string;
+  /** Comments + string literals removed; dollar-quoted bodies kept. */
   readonly sql: string;
-  /** Same as `sql` with dollar-quoted bodies blanked too (pure DDL/text). */
+  /** Comments + literals + dollar-quoted bodies removed. */
   readonly ddl: string;
-  /** `sql`, lower-cased. */
+  /** `code`, lower-cased. */
   readonly lower: string;
 }
 
@@ -35,10 +41,20 @@ export const GLOBAL_TABLES = ['profiles', 'businesses', 'role_permissions', 'uni
 /** Lower-case names of every global table, for quick lookup. */
 export const GLOBAL_TABLE_SET = new Set<string>(GLOBAL_TABLES);
 
+function stripComments(input: string): string {
+  return sanitize(input, true, true);
+}
+
 function toSqlFile(name: string, raw: string): SqlFile {
-  const sql = sanitize(raw, true);
-  const ddl = sanitize(raw, false);
-  return { name, raw, sql, ddl, lower: sql.toLowerCase() };
+  const code = stripComments(raw);
+  return {
+    name,
+    raw,
+    code,
+    sql: sanitize(raw, false, true),
+    ddl: sanitize(raw, false, false),
+    lower: code.toLowerCase(),
+  };
 }
 
 function readDirSql(dir: string): SqlFile[] {
@@ -60,26 +76,22 @@ export function loadSeed(): SqlFile {
   return toSqlFile('seed.sql', readFileSync(join(supabaseRoot, 'seed.sql'), 'utf8'));
 }
 
-/** Concatenated, sanitised SQL from every migration (in order). */
-export function allMigrationSql(): string {
-  return loadMigrations()
-    .map((file) => file.sql)
-    .join('\n');
+/** Concatenated `code` view of every migration, in order. */
+export function allMigrationCode(): string {
+  return loadMigrations().map((file) => file.code).join('\n');
 }
 
-/** Concatenated pure-DDL text from every migration. */
+/** Concatenated pure-DDL text of every migration (no literals, no bodies). */
 export function allMigrationDdl(): string {
-  return loadMigrations()
-    .map((file) => file.ddl)
-    .join('\n');
+  return loadMigrations().map((file) => file.ddl).join('\n');
 }
 
 /**
- * Single-pass blanking of comments and `'...'` literals. Dollar-quoted bodies
- * are kept as code when `keepDollarBodies` is true (needed to see the body of
- * `security definer` functions), otherwise blanked as well.
+ * Single-pass blanking of comments and, optionally, `'...'` literals and
+ * dollar-quoted bodies. Dollar bodies contain executable code, so they are kept
+ * by default (needed to inspect `security definer` function bodies).
  */
-export function sanitize(input: string, keepDollarBodies: boolean): string {
+export function sanitize(input: string, keepStrings: boolean, keepDollarBodies: boolean): string {
   let out = '';
   let i = 0;
   while (i < input.length) {
@@ -105,22 +117,20 @@ export function sanitize(input: string, keepDollarBodies: boolean): string {
       continue;
     }
     if (ch === "'") {
-      out += ' ';
+      const start = i;
       i += 1;
       while (i < input.length) {
         if (input[i] === "'" && input[i + 1] === "'") {
-          out += '  ';
           i += 2;
           continue;
         }
         if (input[i] === "'") {
-          out += ' ';
           i += 1;
           break;
         }
-        out += input[i] === '\n' ? '\n' : ' ';
         i += 1;
       }
+      out += keepStrings ? input.slice(start, i) : ' '.repeat(i - start);
       continue;
     }
     if (ch === '$') {
@@ -144,7 +154,7 @@ export function sanitize(input: string, keepDollarBodies: boolean): string {
 export interface TableDef {
   readonly name: string;
   readonly file: string;
-  /** Just the `create table ... ( ... );` block, sanitised. */
+  /** Just the `create table ... ( ... );` block. */
   readonly block: string;
 }
 
@@ -154,23 +164,21 @@ const CREATE_TABLE_RE = /create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?
 export function createTables(files: readonly SqlFile[] = loadMigrations()): TableDef[] {
   const tables: TableDef[] = [];
   for (const file of files) {
-    for (const match of file.sql.matchAll(CREATE_TABLE_RE)) {
+    for (const match of file.code.matchAll(CREATE_TABLE_RE)) {
       const name = (match[1] as string).toLowerCase();
       const open = match.index + match[0].length - 1;
-      const close = matchingParen(file.sql, open);
-      const block = file.sql.slice(match.index, close === -1 ? undefined : close + 1);
+      const close = matchingParen(file.code, open);
+      const block = file.code.slice(match.index, close === -1 ? undefined : close + 1);
       tables.push({ name, file: file.name, block });
     }
   }
   return tables;
 }
 
-/** Every `alter table X enable row level security` statement, lower-cased names. */
 export function rlsEnabledTables(files: readonly SqlFile[] = loadMigrations()): Set<string> {
   return collectAlter(files, 'enable');
 }
 
-/** Every `alter table X force row level security` statement, lower-cased names. */
 export function rlsForcedTables(files: readonly SqlFile[] = loadMigrations()): Set<string> {
   return collectAlter(files, 'force');
 }
@@ -182,7 +190,7 @@ function collectAlter(files: readonly SqlFile[], verb: 'enable' | 'force'): Set<
     'gi',
   );
   for (const file of files) {
-    for (const match of file.sql.matchAll(re)) set.add((match[1] as string).toLowerCase());
+    for (const match of file.code.matchAll(re)) set.add((match[1] as string).toLowerCase());
   }
   return set;
 }
@@ -202,7 +210,7 @@ const CREATE_POLICY_RE = /create\s+policy\s+([a-z_][a-z0-9_]*)\s+on\s+(?:public\
 export function policies(files: readonly SqlFile[] = loadMigrations()): PolicyDef[] {
   const out: PolicyDef[] = [];
   for (const file of files) {
-    for (const match of file.sql.matchAll(CREATE_POLICY_RE)) {
+    for (const match of file.code.matchAll(CREATE_POLICY_RE)) {
       const body = (match[3] ?? '').toLowerCase();
       const cmd = /for\s+(select|insert|update|delete|all)/.exec(body);
       out.push({
@@ -225,27 +233,28 @@ export interface FunctionDef {
   readonly hasSearchPath: boolean;
 }
 
-const CREATE_FUNCTION_RE = /create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?([a-z_][a-z0-9_]*)\s*\(/gi;
+const CREATE_FUNCTION_RE = /create\s+(?:or\s+replace\s+)?function\s+(?:[a-z_][a-z0-9_]*\.)?([a-z_][a-z0-9_]*)\s*\(/gi;
 
 /** Every function, with its full statement sliced out to the closing `$tag$;`. */
 export function functions(files: readonly SqlFile[] = [...loadMigrations(), ...loadFunctions()]): FunctionDef[] {
   const out: FunctionDef[] = [];
   for (const file of files) {
-    for (const match of file.sql.matchAll(CREATE_FUNCTION_RE)) {
+    for (const match of file.code.matchAll(CREATE_FUNCTION_RE)) {
       const start = match.index;
       const name = (match[1] as string).toLowerCase();
-      const bodyStart = findDollarQuoteStart(file.sql, start + match[0].length);
+      const bodyStart = findDollarQuoteStart(file.code, start + match[0].length);
       if (bodyStart === -1) continue;
-      const tagLen = dollarTagLength(file.sql, bodyStart);
-      const tag = file.sql.slice(bodyStart, bodyStart + tagLen);
-      const closeIdx = file.sql.indexOf(`${tag};`, bodyStart + tagLen);
-      const end = closeIdx === -1 ? file.sql.length : closeIdx + tagLen + 1;
-      const statement = file.sql.slice(start, end);
+      const tagLen = dollarTagLength(file.code, bodyStart);
+      const tag = file.code.slice(bodyStart, bodyStart + tagLen);
+      const closeIdx = file.code.indexOf(`${tag};`, bodyStart + tagLen);
+      const end = closeIdx === -1 ? file.code.length : closeIdx + tagLen + 1;
+      const statement = file.code.slice(start, end);
+      const header = file.code.slice(start, Math.min(end, start + 400));
       out.push({
         name,
         file: file.name,
         statement,
-        securityDefiner: /\bsecurity\s+definer\b/i.test(file.sql.slice(start, Math.min(end, start + 400))),
+        securityDefiner: /\bsecurity\s+definer\b/i.test(header),
         hasSearchPath: /set\s+search_path\s*=/i.test(statement),
       });
     }
@@ -265,7 +274,7 @@ export function dollarTagLength(sql: string, at: number): number {
   return end === -1 ? 2 : end - at + 1;
 }
 
-/** Index of the `)` that balances the `(` at `open`. */
+/** Index of the `)` that balances the `(` at `open` (literals are safe here). */
 export function matchingParen(sql: string, open: number): number {
   if (open < 0) return -1;
   let depth = 0;
@@ -295,7 +304,6 @@ export function columnNames(block: string): string[] {
   return columns;
 }
 
-/** Counts occurrences of a character, for balanced-parentheses checks. */
 export function countChar(text: string, char: string): number {
   let count = 0;
   for (const ch of text) if (ch === char) count += 1;

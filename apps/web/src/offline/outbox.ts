@@ -273,6 +273,20 @@ export async function enqueueMutation(input: MutationInput, context: OutboxConte
   return event;
 }
 
+/** Persist a pre-built event together with any optimistic records, in one transaction. */
+export async function enqueueEvent(
+  event: OutboxEvent,
+  records: readonly { readonly store: CacheStore; readonly value: Record<string, unknown> }[] = [],
+): Promise<OutboxEvent> {
+  const stores = records.map((record) => record.store);
+  await runTransaction([OUTBOX_STORE, ...stores], 'readwrite', (tx) => {
+    txPut(tx, OUTBOX_STORE, event);
+    for (const record of records) txPut(tx, record.store, record.value);
+    return event;
+  });
+  return event;
+}
+
 /** Queue several events (and their local records) in one transaction. */
 export async function enqueueBatch(entries: readonly MutationInput[], context: OutboxContext): Promise<OutboxEvent[]> {
   const events = entries.map((entry) => buildEvent(entry, context));

@@ -51,7 +51,7 @@ export class UnauthorizedError extends ApiError {
 
 /** Network / offline failures (no HTTP response was received). */
 export class NetworkError extends Error {
-  readonly cause?: unknown;
+  override readonly cause?: unknown;
   constructor(message: string, cause?: unknown) {
     super(message);
     this.name = 'NetworkError';
