@@ -1944,27 +1944,28 @@ export class Repository {
   stockValuationReport(caller: Caller, locationId?: string) {
     this.assertPermission(caller, 'inventory.view');
     const currency = caller.business.currency;
+    const showCost = this.permissions(caller).has('purchase.cost.view');
     const products = this.db.all<ProductRow>(`SELECT * FROM products WHERE business_id = ? AND is_active = 1 AND kind != 'SERVICE' ORDER BY name`, [caller.business.id]);
-    const rows = products.map((product) => {
+    type ValuationRow = { itemId: string; name: string; unit: string; quantity: string; unitCost?: string; value?: string };
+    const rows: ValuationRow[] = products.map((product) => {
       const rowsFor = locationId ? this.movements(caller.business.id, product.id).filter((m) => m.location_id === locationId) : this.movements(caller.business.id, product.id);
-      if (rowsFor.length === 0) return { itemId: product.id, name: product.name, unit: product.unit, quantity: '0', unitCost: '0.00', value: '0.00' };
+      if (rowsFor.length === 0) return { itemId: product.id, name: product.name, unit: product.unit, quantity: '0' };
       const valuation = weightedAverageValuation(this.toDomainMovements(rowsFor), { itemId: product.id, currency });
       return {
         itemId: product.id,
         name: product.name,
         unit: valuation.unit,
         quantity: valuation.quantity.toString(),
-        unitCost: valuation.unitCost.amount.toString(),
-        value: valuation.value.amount.toString(),
+        ...(showCost ? { unitCost: valuation.unitCost.amount.toString(), value: valuation.value.amount.toString() } : {}),
       };
     });
-    const total = rows.reduce<Money>((acc, row) => addMoney(acc, money(currency, row.value)), zeroMoney(currency));
-    const showCost = this.permissions(caller).has('purchase.cost.view');
+    const total = rows.reduce<Money>((acc, row) => (row.value ? addMoney(acc, money(currency, row.value)) : acc), zeroMoney(currency));
     return {
       currency,
       method: 'WEIGHTED_AVERAGE' as const,
-      totalValue: total.amount.toString(),
-      rows: showCost ? rows : rows.map(({ unitCost, value, ...rest }) => ({ ...rest, value: undefined, restricted: 'purchase.cost.view required for cost detail' })),
+      totalValue: showCost ? total.amount.toString() : null,
+      costVisibility: showCost ? 'full' : ('restricted' as const),
+      rows,
     };
   }
 

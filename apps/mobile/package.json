@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "@sbm/mobile",
   "version": "0.1.0",
   "private": true,
@@ -43,6 +43,9 @@
   },
   "devDependencies": {
     "@types/react": "~18.3.12",
+    "eslint": "^8.57.1",
+    "eslint-config-expo": "~8.0.1",
+    "ts-node": "^10.9.2",
     "typescript": "~5.7.2"
   },
   "//": "Deliberately NOT part of the root npm workspaces: the Expo dependency tree is large and installing it must be an explicit, opt-in step. See README.md.",

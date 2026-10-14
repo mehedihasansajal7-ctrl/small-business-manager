@@ -4,6 +4,7 @@ import {
   FARMING_TYPES,
   FARM_UNIT_KINDS,
   ALLOCATION_BASES,
+  addMoney,
   dec,
   formatMoney,
   money,
@@ -28,6 +29,7 @@ import {
   type RequestContext,
 } from './http.js';
 import { describeConfig } from './config.js';
+import { renderReportHtml, type PrintSummaryItem, type PrintTable } from './print.js';
 
 export interface RouteDeps {
   readonly repo: Repository;
@@ -492,6 +494,226 @@ export function buildRouter(deps: RouteDeps): Router {
       .db.all<{ id: string; name: string; phone: string | null }>('SELECT id, name, phone FROM suppliers WHERE business_id = ? AND is_active = 1 ORDER BY name', [caller.business.id])
       .map((row) => ({ supplierId: row.id, name: row.name, phone: row.phone, outstanding: repo.payableFor(caller.business.id, row.id).amount.toString() }))
       .filter((row) => Number(row.outstanding) !== 0);
+  });
+
+  // Printable HTML reports (the browser's Print → Save as PDF makes the document).
+  router.get('/api/reports/print/:report', (ctx) => {
+    const caller = requireCaller(ctx);
+    const report = String(ctx.params.report);
+    const { from, to } = range(ctx);
+    const currency = caller.business.currency;
+    const business = repo.getBusiness(caller.business.id);
+    const tables: PrintTable[] = [];
+    const summary: PrintSummaryItem[] = [];
+    const notes: string[] = [];
+    let title = '';
+    let titleBn = '';
+    let periodLabel = `Period ${from} → ${to}`;
+    let basis: string | undefined;
+
+    const money2 = (value: string) => formatMoney(money(currency, value));
+    const asOf = ctx.query.get('asOf') ?? to;
+
+    switch (report) {
+      case 'profit-loss': {
+        const pnl = repo.profitAndLossReport(caller, { from, to });
+        title = 'Profit and Loss';
+        titleBn = 'লাভ-ক্ষতি হিসাব';
+        basis = 'Accrual basis';
+        summary.push(
+          { label: 'Net revenue', labelBn: 'নিট আয়', value: money2(pnl.netRevenue) },
+          { label: 'Cost of goods sold', labelBn: 'বিক্রিত পণ্যের ব্যয়', value: money2(pnl.costOfGoodsSold) },
+          { label: 'Gross profit', labelBn: 'স্থূল মুনাফা', value: money2(pnl.grossProfit) },
+          { label: 'Net profit', labelBn: 'নিট মুনাফা', value: money2(pnl.netProfit), emphasis: true },
+        );
+        tables.push({
+          title: 'Revenue and cost',
+          titleBn: 'আয় ও ব্যয়',
+          columns: ['Line', 'Amount'],
+          rows: [
+            { cells: ['Sales revenue', money2(pnl.revenue)] },
+            { cells: ['Less: discounts and returns', `(${money2(pnl.contraRevenue)})`] },
+            { cells: ['Net revenue', money2(pnl.netRevenue)], emphasis: true },
+            { cells: ['Cost of goods sold', `(${money2(pnl.costOfGoodsSold)})`] },
+            { cells: ['Gross profit', money2(pnl.grossProfit)], emphasis: true },
+            { cells: ['Other income', money2(pnl.otherIncome)] },
+          ],
+        });
+        tables.push({
+          title: 'Operating expenses',
+          titleBn: 'পরিচালন ব্যয়',
+          columns: ['Account', 'Amount'],
+          rows: pnl.expensesByAccount.map((row) => ({ cells: [`${row.account} ${row.name}`, money2(row.amount)] })),
+        });
+        tables[1]?.rows.push({ cells: ['Total operating expenses', money2(pnl.operatingExpenses)], emphasis: true });
+        notes.push(`Cash-basis operating result for the same period: ${money2(pnl.cashBasisResult)}. Stock purchases are assets until sold, so cash and profit differ.`);
+        break;
+      }
+      case 'balance-sheet': {
+        const sheet = repo.balanceSheetReport(caller, asOf);
+        title = 'Balance Sheet';
+        titleBn = 'উদ্বৃত্তপত্র';
+        periodLabel = `As at ${asOf}`;
+        basis = 'Accrual basis';
+        summary.push(
+          { label: 'Total assets', labelBn: 'মোট সম্পদ', value: money2(sheet.totalAssets) },
+          { label: 'Total liabilities', labelBn: 'মোট দায়', value: money2(sheet.totalLiabilities) },
+          { label: 'Total equity', labelBn: 'মোট পুঁজি', value: money2(sheet.totalEquityIncludingResult), emphasis: true },
+        );
+        tables.push({ title: 'Assets', titleBn: 'সম্পদ', columns: ['Account', 'Amount'], rows: sheet.assets.map((row) => ({ cells: [`${row.account} ${row.name}`, money2(row.amount)] })) });
+        tables[0]?.rows.push({ cells: ['Total assets', money2(sheet.totalAssets)], emphasis: true });
+        tables.push({ title: 'Liabilities', titleBn: 'দায়', columns: ['Account', 'Amount'], rows: sheet.liabilities.map((row) => ({ cells: [`${row.account} ${row.name}`, money2(row.amount)] })) });
+        tables[1]?.rows.push({ cells: ['Total liabilities', money2(sheet.totalLiabilities)], emphasis: true });
+        tables.push({
+          title: 'Equity',
+          titleBn: 'পুঁজি',
+          columns: ['Account', 'Amount'],
+          rows: [
+            ...sheet.equity.map((row) => ({ cells: [`${row.account} ${row.name}`, money2(row.amount)] })),
+            { cells: ['Current period result (unclosed)', money2(String(Number(sheet.totalEquityIncludingResult) - Number(sheet.totalEquity)))] },
+            { cells: ['Total equity', money2(sheet.totalEquityIncludingResult)], emphasis: true },
+          ],
+        });
+        notes.push(sheet.balanced ? 'Assets equal liabilities plus equity.' : 'WARNING: the balance sheet does not balance - run the integrity report before relying on these figures.');
+        break;
+      }
+      case 'trial-balance': {
+        const balance = repo.trialBalanceReport(caller, { from, to });
+        title = 'Trial Balance';
+        titleBn = 'রেওয়ামিল';
+        basis = 'Accrual basis';
+        summary.push(
+          { label: 'Total debit', labelBn: 'মোট ডেবিট', value: money2(balance.totalDebit) },
+          { label: 'Total credit', labelBn: 'মোট ক্রেডিট', value: money2(balance.totalCredit) },
+        );
+        tables.push({
+          title: 'Accounts',
+          titleBn: 'হিসাবসমূহ',
+          columns: ['Code', 'Account', 'Debit', 'Credit'],
+          rows: [
+            ...balance.rows.map((row) => ({ cells: [row.account, row.name, money2(row.debit), money2(row.credit)] })),
+            { cells: ['', 'Total', money2(balance.totalDebit), money2(balance.totalCredit)], emphasis: true },
+          ],
+        });
+        notes.push(balance.balanced ? 'Debits equal credits.' : 'WARNING: debits do not equal credits.');
+        break;
+      }
+      case 'cash-flow': {
+        const flow = repo.cashFlowReport(caller, { from, to });
+        title = 'Cash Flow';
+        titleBn = 'নগদ প্রবাহ';
+        summary.push(
+          { label: 'Opening balance', labelBn: 'প্রারম্ভিক জের', value: money2(flow.opening) },
+          { label: 'Cash in', labelBn: 'নগদ প্রাপ্তি', value: money2(flow.inflows) },
+          { label: 'Cash out', labelBn: 'নগদ প্রদান', value: money2(flow.outflows) },
+          { label: 'Closing balance', labelBn: 'সমাপনি জের', value: money2(flow.closing), emphasis: true },
+        );
+        tables.push({
+          title: 'Movement',
+          titleBn: 'নগদ চলাচল',
+          columns: ['Line', 'Amount'],
+          rows: [
+            { cells: ['Opening balance', money2(flow.opening)] },
+            { cells: ['Total cash received', money2(flow.inflows)] },
+            { cells: ['Total cash paid', `(${money2(flow.outflows)})`] },
+            { cells: ['Net change', money2(flow.netChange)], emphasis: true },
+            { cells: ['Closing balance', money2(flow.closing)], emphasis: true },
+          ],
+        });
+        notes.push('A cash-flow figure is not a profit figure: capital contributions and account transfers are excluded because they are not operating results.');
+        break;
+      }
+      case 'stock-valuation': {
+        const valuation = repo.stockValuationReport(caller, ctx.query.get('locationId') ?? undefined);
+        title = 'Stock Valuation';
+        titleBn = 'মজুদ মূল্যায়ন';
+        periodLabel = `As at ${to}`;
+        basis = 'Weighted average';
+        summary.push({ label: 'Total inventory value', labelBn: 'মোট মজুদ মূল্য', value: valuation.totalValue ? money2(valuation.totalValue) : 'restricted', emphasis: true });
+        tables.push({
+          title: 'Items',
+          titleBn: 'পণ্যসমূহ',
+          columns: ['Item', 'Quantity', 'Unit cost', 'Value'],
+          rows: valuation.rows.map((row) => ({
+            cells: [row.name, `${row.quantity} ${row.unit}`, row.unitCost ? money2(row.unitCost) : 'restricted', row.value ? money2(row.value) : 'restricted'],
+          })),
+        });
+        notes.push('Valuation uses the weighted-average unit cost in force at each movement; historical COGS is never recomputed.');
+        break;
+      }
+      case 'receivables': {
+        repo.assertPermission(caller, 'report.view');
+        const rows = repo
+          .db.all<{ id: string; name: string; phone: string | null }>('SELECT id, name, phone FROM customers WHERE business_id = ? AND is_active = 1 ORDER BY name', [caller.business.id])
+          .map((row) => ({ row, outstanding: repo.receivableFor(caller.business.id, row.id) }))
+          .filter((entry) => !entry.outstanding.amount.isZero());
+        title = 'Receivables';
+        titleBn = 'প্রাপ্য হিসাব';
+        periodLabel = `As at ${to}`;
+        const total = rows.reduce((acc, entry) => addMoney(acc, entry.outstanding), money(currency, 0));
+        summary.push({ label: 'Total receivable', labelBn: 'মোট প্রাপ্য', value: formatMoney(total), emphasis: true });
+        tables.push({
+          title: 'Customers owing money',
+          titleBn: 'গ্রাহক তালিকা',
+          columns: ['Customer', 'Phone', 'Outstanding'],
+          rows: rows.map((entry) => ({ cells: [entry.row.name, entry.row.phone ?? '', formatMoney(entry.outstanding)] })),
+        });
+        notes.push('A sale increases revenue when posted; the receivable falls when the customer actually pays.');
+        break;
+      }
+      case 'payables': {
+        repo.assertPermission(caller, 'report.view');
+        const rows = repo
+          .db.all<{ id: string; name: string; phone: string | null }>('SELECT id, name, phone FROM suppliers WHERE business_id = ? AND is_active = 1 ORDER BY name', [caller.business.id])
+          .map((row) => ({ row, outstanding: repo.payableFor(caller.business.id, row.id) }))
+          .filter((entry) => !entry.outstanding.amount.isZero());
+        title = 'Payables';
+        titleBn = 'প্রদেয় হিসাব';
+        periodLabel = `As at ${to}`;
+        const total = rows.reduce((acc, entry) => addMoney(acc, entry.outstanding), money(currency, 0));
+        summary.push({ label: 'Total payable', labelBn: 'মোট প্রদেয়', value: formatMoney(total), emphasis: true });
+        tables.push({
+          title: 'Suppliers to pay',
+          titleBn: 'সরবরাহকারী তালিকা',
+          columns: ['Supplier', 'Phone', 'Outstanding'],
+          rows: rows.map((entry) => ({ cells: [entry.row.name, entry.row.phone ?? '', formatMoney(entry.outstanding)] })),
+        });
+        notes.push('Recording a supplier payment settles a payable; it is not a second expense.');
+        break;
+      }
+      case 'integrity': {
+        const integrity = repo.integrityReport(caller);
+        title = 'Reconciliation Check';
+        titleBn = 'হিসাব মিলকরণ';
+        summary.push({ label: 'Result', value: integrity.ok ? 'ALL CHECKS PASSED' : 'ISSUES FOUND', emphasis: true });
+        tables.push({
+          title: 'Checks',
+          titleBn: 'পরীক্ষাসমূহ',
+          columns: ['Check', 'Result', 'Detail'],
+          rows: integrity.checks.map((check) => ({ cells: [check.id, check.ok ? 'OK' : 'FAIL', check.detail], ...(check.ok ? {} : { emphasis: true }) })),
+        });
+        break;
+      }
+      default:
+        throw HttpError.badRequest('VALIDATION', `Unknown printable report ${JSON.stringify(report)}. Use: profit-loss, balance-sheet, trial-balance, cash-flow, stock-valuation, receivables, payables, integrity`);
+    }
+
+    const html = renderReportHtml({
+      businessName: business.name,
+      reportTitle: title,
+      reportTitleBn: titleBn,
+      periodLabel,
+      currency,
+      timezone: business.timezone,
+      tables,
+      summary,
+      notes,
+      generatedAt: new Date().toISOString(),
+      ...(basis ? { basis } : {}),
+    });
+    ctx.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    ctx.res.end(html);
+    return undefined;
   });
 
   router.get('/api/reports/export/:table', (ctx) => {

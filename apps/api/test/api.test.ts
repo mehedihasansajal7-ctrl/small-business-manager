@@ -1003,6 +1003,57 @@ describe('integrity / reconciliation report', () => {
   });
 });
 
+describe('printable reports', () => {
+  it('renders print-ready HTML for each report with the real figures', async () => {
+    const w = await setupBusiness('print@test.sbm');
+    await w.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: w.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    await w.client.post('/api/sales', { documentDate: '2026-04-05', cashReceived: '3400', lines: [{ productId: w.productId, quantity: '50', unit: 'kg', unitPrice: '68' }] });
+    await w.client.post('/api/income-expenses', { kind: 'EXPENSE', categoryAccount: '5170', documentDate: '2026-04-06', amount: '1000', note: 'Rent' });
+
+    for (const report of ['profit-loss', 'balance-sheet', 'trial-balance', 'cash-flow', 'stock-valuation', 'receivables', 'payables', 'integrity']) {
+      const response = await w.client.request('GET', `/api/reports/print/${report}?from=2026-04-01&to=2026-04-30`, undefined, { raw: true });
+      expect(response.status, `report ${report}`).toBe(200);
+      const html = String(response.body);
+      expect(html).toContain('<!doctype html>');
+      expect(html).toContain('Small Business Manager');
+      expect(html).toContain('not a tax or audit document');
+      expect(html).toContain('window.print()');
+      expect(html).toContain('Shop print@test.sbm');
+      // Bangla document titles are present for the bilingual reader.
+      expect(html).toMatch(/[\u0980-\u09FF]/);
+    }
+
+    const pnl = String((await w.client.request('GET', '/api/reports/print/profit-loss?from=2026-04-01&to=2026-04-30', undefined, { raw: true })).body);
+    expect(pnl).toContain('৳3,400.00'); // net revenue = 50 kg x 68, no discount
+    expect(pnl).toContain('Profit and Loss');
+    expect(pnl).toContain('লাভ-ক্ষতি হিসাব');
+
+    const stock = String((await w.client.request('GET', '/api/reports/print/stock-valuation?from=2026-04-01&to=2026-04-30', undefined, { raw: true })).body);
+    expect(stock).toContain('Weighted average');
+    expect(stock).toContain('৳2,900.00'); // 50 kg left at 58
+
+    const integrity = String((await w.client.request('GET', '/api/reports/print/integrity', undefined, { raw: true })).body);
+    expect(integrity).toContain('ALL CHECKS PASSED');
+  });
+
+  it('escapes user-controlled text so a crafted name cannot inject markup', async () => {
+    const w = await setupBusiness('printex@test.sbm');
+    const hostile = await w.client.post<{ id: string }>('/api/customers', { name: '<img src=x onerror="alert(1)">Bad Co' });
+    await w.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: w.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    await w.client.post('/api/sales', { documentDate: '2026-04-05', customerId: hostile.body.id, cashReceived: '0', lines: [{ productId: w.productId, quantity: '1', unit: 'kg', unitPrice: '68' }] });
+
+    const html = String((await w.client.request('GET', '/api/reports/print/receivables?from=2026-04-01&to=2026-04-30', undefined, { raw: true })).body);
+    expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;Bad Co');
+    expect(html).not.toContain('<img src=x onerror=');
+  });
+
+  it('rejects an unknown report name', async () => {
+    const w = await setupBusiness('printbad@test.sbm');
+    const response = await w.client.get('/api/reports/print/secret-report');
+    expect(response.status).toBe(400);
+  });
+});
+
 describe('validation and limits', () => {
   it('rejects malformed input instead of storing it', async () => {
     const w = await setupBusiness('valid@test.sbm');

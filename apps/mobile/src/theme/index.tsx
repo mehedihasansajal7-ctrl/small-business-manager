@@ -86,7 +86,13 @@ export const typography = {
   body: { fontSize: 15, fontWeight: '400' as const },
   label: { fontSize: 13, fontWeight: '600' as const },
   caption: { fontSize: 12, fontWeight: '400' as const },
-  mono: { fontSize: 14, fontWeight: '400' as const, fontVariant: ['tabular-nums'] as const },
+  /**
+   * Money and quantities. `fontVariant: ['tabular-nums']` keeps columns of digits
+   * aligned; the assertion is needed because `as const` on the object below would
+   * otherwise freeze the array into a readonly type that React Native's
+   * `TextStyle.fontVariant` does not accept.
+   */
+  mono: { fontSize: 14, fontWeight: '400' as const, fontVariant: ['tabular-nums'] as FontVariant[] },
 } as const;
 
 export interface ThemeValue {
