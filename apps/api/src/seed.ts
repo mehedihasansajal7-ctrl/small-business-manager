@@ -185,8 +185,8 @@ export async function seed(target = 'local', verbose = true): Promise<{ email: s
 
   const profit = repo.cycleProfitReport(ownerCaller, cycleId);
   const dashboard = repo.dashboard(ownerCaller, { from: `${month}-01`, to: today });
-
-  // Two example AI questions in fallback mode (no provider needed).
+  const integrity = repo.integrityReport(ownerCaller);
+  const aiAnswer = await new (await import('./ai.js')).AIAgent(repo, config).ask(ownerCaller, { question: 'How is my business doing this month?', language: 'en' });
   const aiStatus = repo.db.get('SELECT 1');
   void aiStatus;
 
@@ -199,6 +199,11 @@ export async function seed(target = 'local', verbose = true): Promise<{ email: s
     process.stdout.write(`Cycle cost to date: ${String(profit.costToDate)} BDT\n`);
     process.stdout.write(`Cycle revenue     : ${String(profit.revenue)} BDT | COGS ${String(profit.cogs)} BDT | gross ${String(profit.grossProfit)} BDT\n`);
     process.stdout.write(`Month dashboard   : sales ${String(dashboard.sales)}, net profit ${String((dashboard as Record<string, unknown>).netProfit ?? 'restricted')}\n`);
+    process.stdout.write(`Integrity report  : ${integrity.ok ? 'ALL CHECKS PASSED' : 'ISSUES FOUND'} - ${integrity.summary}\n`);
+    if (!integrity.ok) {
+      for (const check of integrity.checks.filter((c) => !c.ok)) process.stdout.write(`                    ! ${check.id}: ${check.detail}\n`);
+    }
+    process.stdout.write(`AI agent mode     : ${aiAnswer.mode} (provider: ${aiAnswer.provider}) - no paid service required\n`);
     process.stdout.write('\nSign in with: owner@demo.sbm / demo1234   (partners: partner@demo.sbm, farm@demo.sbm - same password)\n');
   }
 

@@ -27,6 +27,17 @@ export default defineConfig({
       },
     },
   },
+  // `vite preview` (used for the local smoke test and for simple self-hosting)
+  // needs the same same-origin `/api` proxy.
+  preview: {
+    port: 4173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: false,
+      },
+    },
+  },
   build: {
     outDir: 'dist',
     sourcemap: true,

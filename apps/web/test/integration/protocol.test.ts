@@ -22,6 +22,9 @@ let cookie = '';
 const realFetch = globalThis.fetch;
 
 beforeAll(async () => {
+  // `loadConfig` creates the data directory from env before overrides apply, so
+  // point it at apps/web/.test-data (never the repo root, never ./data here).
+  vi.stubEnv('DATA_DIR', '.test-data');
   app = createApp({
     port: 0,
     host: '127.0.0.1',

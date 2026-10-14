@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useColorScheme } from 'react-native';
+import { useColorScheme, type FontVariant } from 'react-native';
 
 import { PREF_KEYS, readPref, writePref } from '../prefs/storage';
 

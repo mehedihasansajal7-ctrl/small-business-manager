@@ -98,7 +98,7 @@ export function FinanceHomeScreen({ navigation }: Props) {
             <Button
               label={action.label}
               variant="secondary"
-              onPress={() => navigation.navigate(action.key as never, action.params as never)}
+              onPress={() => go(action.key, action.params)}
               fullWidth
             />
           </PermissionGate>
