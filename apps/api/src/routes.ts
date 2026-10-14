@@ -55,8 +55,15 @@ export function buildRouter(deps: RouteDeps): Router {
   const inviteLimiter = new RateLimiter(config.rateLimits.invitePerHour, 60 * 60_000);
 
   const requireSession = (ctx: RequestContext): SessionContext => {
+    // Two ways in, one session:
+    //  1. the HttpOnly cookie (browser clients), and
+    //  2. an `Authorization: Bearer <sessionToken>` header, because React Native's
+    //     fetch does not reliably expose `Set-Cookie` to JavaScript. The token is
+    //     the same signed value the cookie carries, so a stolen token is no worse
+    //     than a stolen cookie - and it is still never sent to a third party.
+    const bearer = String(ctx.req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim();
     const cookies = parseCookies(ctx.req.headers.cookie);
-    const resolved = auth.resolveSession(cookies[SESSION_COOKIE_NAME]);
+    const resolved = auth.resolveSession(bearer !== '' ? bearer : cookies[SESSION_COOKIE_NAME]);
     if (!resolved) throw HttpError.unauthorized();
     return { user: resolved.user, sessionId: resolved.session.id, businessId: resolved.session.business_id };
   };
@@ -72,11 +79,17 @@ export function buildRouter(deps: RouteDeps): Router {
   };
 
   const setSessionCookie = (ctx: RequestContext, cookieValue: string) => {
+    // `Secure` is only added when the request really arrived over HTTPS.
+    // Marking the cookie Secure on a plain-HTTP LAN setup makes browsers silently
+    // DISCARD it, which looks exactly like "sign-in does nothing". A proxy that
+    // terminates TLS says so through `x-forwarded-proto`.
+    const forwardedProto = String(ctx.req.headers['x-forwarded-proto'] ?? '').split(',')[0]?.trim().toLowerCase();
+    const isHttps = forwardedProto === 'https' || Boolean((ctx.req.socket as { encrypted?: boolean }).encrypted);
     ctx.res.setHeader(
       'set-cookie',
       serializeCookie(SESSION_COOKIE_NAME, cookieValue, {
         maxAgeSeconds: config.sessionTtlHours * 3600,
-        secure: config.secureCookies,
+        secure: config.secureCookies && isHttps,
         httpOnly: true,
         sameSite: 'Lax',
       }),
@@ -131,7 +144,7 @@ export function buildRouter(deps: RouteDeps): Router {
     }
     const session = auth.createSession(user.id, businessId, ctx.req.headers['user-agent'] ?? null);
     setSessionCookie(ctx, session.cookieValue);
-    return { user: { id: user.id, email: user.email, displayName: user.display_name }, businessId, expiresAt: session.expiresAt };
+    return { user: { id: user.id, email: user.email, displayName: user.display_name }, businessId, expiresAt: session.expiresAt, sessionToken: session.cookieValue };
   });
 
   router.post('/api/auth/login', (ctx) => {
@@ -148,7 +161,7 @@ export function buildRouter(deps: RouteDeps): Router {
     const session = auth.createSession(user.id, businessId, ctx.req.headers['user-agent'] ?? null);
     setSessionCookie(ctx, session.cookieValue);
     repo.audit({ businessId, actorId: user.id, actorEmail: user.email, action: 'auth.login', entityType: 'user', entityId: user.id });
-    return { user: { id: user.id, email: user.email, displayName: user.display_name }, businesses, businessId };
+    return { user: { id: user.id, email: user.email, displayName: user.display_name }, businesses, businessId, sessionToken: session.cookieValue };
   });
 
   router.post('/api/auth/logout', (ctx) => {

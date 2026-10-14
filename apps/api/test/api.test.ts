@@ -1285,6 +1285,103 @@ describe('member permission escalation guardrails', () => {
   });
 });
 
+describe('session transport (cookie and bearer)', () => {
+  it('returns a session token that works as a bearer credential without any cookie', async () => {
+    const c = client();
+    const registered = await c.post<{ sessionToken: string }>('/api/auth/register', {
+      email: 'bearer@test.sbm',
+      password: 'password123',
+      displayName: 'Bearer User',
+      businessName: 'Bearer Shop',
+    });
+    expect(registered.status).toBe(200);
+    expect(typeof registered.body.sessionToken).toBe('string');
+    expect(registered.body.sessionToken.length).toBeGreaterThan(20);
+
+    // A brand new client with NO cookie jar, exactly like a React Native device
+    // whose fetch did not expose Set-Cookie.
+    const bare = client();
+    const anonymous = await bare.get('/api/auth/me');
+    expect(anonymous.status).toBe(401);
+
+    const response = await fetch(`${baseUrl}/api/auth/me`, { headers: { authorization: `Bearer ${registered.body.sessionToken}` } });
+    expect(response.status).toBe(200);
+    const me = (await response.json()) as { user: { email: string } };
+    expect(me.user.email).toBe('bearer@test.sbm');
+
+    // And the token works for a write, not just a read.
+    const write = await fetch(`${baseUrl}/api/products`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${registered.body.sessionToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Bearer rice', unit: 'kg', kind: 'PRODUCT' }),
+    });
+    expect(write.status).toBe(200);
+  });
+
+  it('issues the login token too, and rejects a forged one', async () => {
+    const c = client();
+    await c.post('/api/auth/register', { email: 'bearer2@test.sbm', password: 'password123', displayName: 'Two', businessName: 'Two Shop' });
+
+    const login = await client().post<{ sessionToken: string }>('/api/auth/login', { email: 'bearer2@test.sbm', password: 'password123' });
+    expect(login.status).toBe(200);
+    expect(typeof login.body.sessionToken).toBe('string');
+
+    const ok = await fetch(`${baseUrl}/api/auth/me`, { headers: { authorization: `Bearer ${login.body.sessionToken}` } });
+    expect(ok.status).toBe(200);
+
+    // A tampered token must not authenticate, exactly like a tampered cookie.
+    const forged = await fetch(`${baseUrl}/api/auth/me`, { headers: { authorization: `Bearer ${login.body.sessionToken.slice(0, -3)}xyz` } });
+    expect(forged.status).toBe(401);
+  });
+
+  it('does NOT mark the cookie Secure on plain HTTP, so a browser keeps it', async () => {
+    // The suite's app runs with secureCookies:false (local HTTP). The cookie must
+    // still be HttpOnly and must not be Secure, or a browser on http:// drops it.
+    const response = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'cookie@test.sbm', password: 'password123', displayName: 'Cookie User', businessName: 'Cookie Shop' }),
+    });
+    const setCookie = response.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('sbm_session=');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).not.toContain('Secure');
+  });
+
+  it('marks the cookie Secure when the request came over HTTPS', async () => {
+    // A separate app with Secure cookies enabled, which is the production default.
+    const secureApp = createApp({
+      port: 0,
+      host: '127.0.0.1',
+      databaseFile: ':memory:',
+      sessionSecret: 'secure-suite-secret-secure-suite-1234',
+      secureCookies: true,
+      mode: 'local',
+      rateLimits: { registerPerHour: 1000, loginPer15Min: 1000, invitePerHour: 1000 },
+    });
+    const started = await secureApp.start();
+    try {
+      const overHttp = await fetch(`http://127.0.0.1:${started.port}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'sec1@test.sbm', password: 'password123', displayName: 'Sec One', businessName: 'Sec Shop' }),
+      });
+      // Plain HTTP must NOT be marked Secure, otherwise the browser discards it.
+      expect(overHttp.headers.get('set-cookie') ?? '').not.toContain('Secure');
+
+      const overTls = await fetch(`http://127.0.0.1:${started.port}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-proto': 'https' },
+        body: JSON.stringify({ email: 'sec1@test.sbm', password: 'password123' }),
+      });
+      // Behind a TLS-terminating proxy the cookie must be Secure.
+      expect(overTls.headers.get('set-cookie') ?? '').toContain('Secure');
+    } finally {
+      await secureApp.stop();
+    }
+  });
+});
+
 describe('validation and limits', () => {
   it('rejects malformed input instead of storing it', async () => {
     const w = await setupBusiness('valid@test.sbm');

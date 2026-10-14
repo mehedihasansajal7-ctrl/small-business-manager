@@ -6,6 +6,7 @@ import {
   getSessionSync,
   loadSession,
   saveSessionCookie,
+  saveSessionFromResponse,
 } from './session-store';
 
 /**
@@ -107,10 +108,12 @@ export async function request<T>(method: string, path: string, options: RequestO
   await loadSession();
   const headers: Record<string, string> = { accept: 'application/json' };
   const session = getSessionSync();
-  if (session?.cookie) {
-    // The server authenticates with an HttpOnly cookie and has no bearer-token
-    // fallback, so the captured `Set-Cookie` value is replayed verbatim.
-    headers.cookie = session.cookie;
+  if (session?.cookie) headers.cookie = session.cookie;
+  if (session?.token) {
+    // Also send the bearer token: React Native's fetch does not reliably expose
+    // `Set-Cookie`, so the token from the JSON body is what keeps a device
+    // signed in. The server accepts either.
+    headers.authorization = `Bearer ${session.token}`;
   }
   let bodyInit: string | undefined;
   if (options.body !== undefined) {
@@ -142,8 +145,6 @@ export async function request<T>(method: string, path: string, options: RequestO
   }
 
   const setCookie = response.headers?.get?.('set-cookie') ?? null;
-  const cookie = extractSessionCookie(setCookie);
-  if (cookie) await saveSessionCookie(cookie);
 
   const text = await response.text();
   done();
@@ -155,6 +156,14 @@ export async function request<T>(method: string, path: string, options: RequestO
     } catch {
       parsed = text;
     }
+  }
+
+  // Capture the session from the body's `sessionToken` when present (reliable on
+  // a device) and fall back to the `Set-Cookie` header.
+  {
+    const cookie = extractSessionCookie(setCookie);
+    if (cookie) await saveSessionCookie(cookie);
+    await saveSessionFromResponse(parsed, setCookie);
   }
 
   if (response.status === 401) {
