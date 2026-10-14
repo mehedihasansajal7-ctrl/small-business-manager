@@ -1,0 +1,185 @@
+name: Android APK
+
+# Builds a signed, side-loadable release APK on a GitHub runner (which has the JDK
+# and the Android SDK pre-installed) and publishes it to the PUBLIC downloads repo,
+# exactly like the Family Finance app does:
+#
+#   https://github.com/mehedihasansajal7-ctrl/small-business-manager-downloads/releases
+#
+# Why CI instead of building locally: a first Android build needs ~5-7 GB of
+# downloaded toolchain (JDK, SDK, Gradle cache, NDK for Reanimated). The authoring
+# machine had ~1 GB free, so building here is the only zero-cost option.
+#
+# Cost: runs on GitHub's free Actions minutes. Nothing else is required - no Expo
+# account, no EAS subscription, no Play Console.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to publish, e.g. v0.1.0'
+        required: true
+        default: 'v0.1.0'
+      apiUrl:
+        description: 'API base URL baked into this build (users can change it in the app)'
+        required: true
+        default: 'http://192.168.0.20:8787'
+      releaseNotes:
+        description: 'Short release notes (optional)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Build and publish the APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      # Metro inlines this into the JS bundle at build time; the app can override
+      # it at runtime on the sign-in screen ("Advanced: which server?").
+      EXPO_PUBLIC_API_URL: ${{ inputs.apiUrl }}
+      EXPO_NO_TELEMETRY: '1'
+      CI: '1'
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up the Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept SDK licences and install platform/build tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - name: Build the shared domain package
+        run: |
+          npm ci
+          npm run build:domain
+
+      - name: Install the mobile dependencies
+        working-directory: apps/mobile
+        run: npm ci
+
+      - name: Generate the native Android project
+        working-directory: apps/mobile
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Allow a LAN HTTP server in this sideloaded build
+        working-directory: apps/mobile
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          # A self-hosted API on an office LAN is reached over plain HTTP, which
+          # Android blocks by default for release builds. This APK is distributed
+          # by sideloading, so cleartext is enabled deliberately here and the
+          # README says to remove it once the API is served over HTTPS.
+          python3 - "$MANIFEST" <<'PY'
+          import re, sys
+          path = sys.argv[1]
+          xml = open(path, encoding='utf-8').read()
+          if 'usesCleartextTraffic' in xml:
+              print('already present')
+          else:
+              xml = re.sub(r'<application\b', '<application android:usesCleartextTraffic="true"', xml, count=1)
+              open(path, 'w', encoding='utf-8').write(xml)
+              print('added android:usesCleartextTraffic="true"')
+          PY
+          grep -q 'usesCleartextTraffic' "$MANIFEST" && echo "manifest verified"
+
+      - name: Report the resolved app configuration
+        working-directory: apps/mobile
+        run: npx expo config --type public | head -40
+
+      - name: Assemble the release APK
+        working-directory: apps/mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Collect the APK
+        id: apk
+        run: |
+          set -euo pipefail
+          SRC=$(find apps/mobile/android/app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          if [ -z "$SRC" ]; then echo "No APK produced" >&2; exit 1; fi
+          NAME="SmallBusinessManager-${{ inputs.version }}.apk"
+          mkdir -p dist
+          cp "$SRC" "dist/$NAME"
+          ls -lh "dist/$NAME"
+          # Prove it is a real APK and show the signer, so the release is verifiable.
+          file "dist/$NAME"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -n 1)
+          "$APKSIGNER" verify --print-certs "dist/$NAME" | head -20 || true
+          echo "path=dist/$NAME" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the APK as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish the release to the public downloads repository
+        env:
+          GH_TOKEN: ${{ secrets.DOWNLOADS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::The DOWNLOADS_TOKEN secret is missing, so the APK cannot be published."
+            exit 1
+          fi
+          REPO=mehedihasansajal7-ctrl/small-business-manager-downloads
+          TAG="${{ inputs.version }}"
+          NAME="${{ steps.apk.outputs.name }}"
+
+          NOTES=$(cat <<EOF
+          ![status](https://img.shields.io/badge/APK-side--loadable-brightgreen)
+
+          Android APK for **Small Business Manager** (Small Business Management + Farming module) - offline-first, for 2-5 business partners.
+
+          ### Install
+          1. Download \`$NAME\` below.
+          2. On the phone, allow installing from this source (Android asks once).
+          3. Open the app, then on the sign-in screen expand **Advanced: which server?** and enter the address of your server (for example \`http://192.168.0.20:8787\`), then tap **Test and save this server**.
+
+          ### This build
+          - API address baked in: \`${{ inputs.apiUrl }}\`
+          - You can change the server address inside the app at any time; the build address is only the default.
+          ${{ inputs.releaseNotes }}
+
+          ### Honest notes
+          - Signed for side-loading, not published on Google Play.
+          - The app works offline once signed in; the first sign-in and invitation acceptance need the server to be reachable.
+          - No paid service is required anywhere in this project.
+          EOF
+          )
+
+          if gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            echo "Release $TAG already exists; replacing the asset."
+            gh release upload "$TAG" "dist/$NAME" --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" "dist/$NAME" --repo "$REPO" --title "Small Business Manager $TAG" --notes "$NOTES"
+          fi
+
+          echo "Published to https://github.com/$REPO/releases/tag/$TAG"
+          echo "Direct link: https://github.com/$REPO/releases/download/$TAG/$NAME"

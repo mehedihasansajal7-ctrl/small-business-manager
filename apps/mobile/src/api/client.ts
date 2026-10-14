@@ -1,4 +1,5 @@
-import { API_BASE_URL, API_TIMEOUT_MS } from '../config/env';
+import { API_TIMEOUT_MS } from '../config/env';
+import { getApiBaseUrl } from '../config/server-url';
 import {
   clearSession,
   extractSessionCookie,
@@ -75,7 +76,7 @@ function notifyUnauthorized(): void {
 }
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
-  const url = `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+  const url = `${getApiBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
   if (!query) return url;
   const parts: string[] = [];
   for (const [key, value] of Object.entries(query)) {

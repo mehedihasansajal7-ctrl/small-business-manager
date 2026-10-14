@@ -4,7 +4,8 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { useAuth, authErrorMessage } from '../../auth/AuthProvider';
 import { Button, Card, Field, Notice, Screen } from '../../components';
-import { APP_INFO, API_BASE_URL } from '../../config/env';
+import { APP_INFO } from '../../config/env';
+import { BUILD_TIME_API_URL, getApiBaseUrl, probeServer, resetApiBaseUrl, setApiBaseUrl } from '../../config/server-url';
 import { useI18n } from '../../i18n';
 import { useNetwork } from '../../lib/network';
 import { useTheme } from '../../theme';
@@ -18,6 +19,11 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'SignIn'>;
  * The server authenticates with an HttpOnly cookie and offers no bearer-token
  * fallback, so this screen is the only place a session can be created — and it
  * needs the internet. The UI says so plainly instead of failing silently.
+ *
+ * It also owns the "which server?" question: a sideloaded APK can be pointed at
+ * any address (a PC on the office LAN, or a self-hosted box) so that one file can
+ * be shared with several businesses. The address is tested before it is saved,
+ * so a typo is caught here rather than looking like a wrong password.
  */
 export function SignInScreen({ navigation }: Props) {
   const { colors, spacing, typography } = useTheme();
@@ -28,6 +34,9 @@ export function SignInScreen({ navigation }: Props) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [serverUrl, setServerUrl] = useState(getApiBaseUrl());
+  const [serverNotice, setServerNotice] = useState<string | null>(null);
+  const [serverBusy, setServerBusy] = useState(false);
 
   const submit = async () => {
     setError(null);
@@ -45,6 +54,29 @@ export function SignInScreen({ navigation }: Props) {
     }
   };
 
+  const testAndSaveServer = async () => {
+    setServerBusy(true);
+    setServerNotice(null);
+    try {
+      const probe = await probeServer(serverUrl);
+      if (!probe.ok) {
+        setServerNotice(probe.detail);
+        return;
+      }
+      const saved = await setApiBaseUrl(serverUrl);
+      setServerUrl(saved);
+      setServerNotice(`${t('signin.serverOk')} ${probe.detail}`);
+    } finally {
+      setServerBusy(false);
+    }
+  };
+
+  const restoreBuildDefault = async () => {
+    const restored = await resetApiBaseUrl();
+    setServerUrl(restored);
+    setServerNotice(t('signin.serverReset'));
+  };
+
   return (
     <Screen title={t('app.name')} subtitle={t('app.tagline')}>
       {!online ? <Notice tone="warning" body={t('auth.needInternet')} /> : null}
@@ -58,12 +90,29 @@ export function SignInScreen({ navigation }: Props) {
         <Button label={t('auth.signUp')} variant="secondary" onPress={() => navigation.navigate('Register')} fullWidth />
       </Card>
 
+      <Card>
+        <Text style={[typography.body, { color: colors.text, fontWeight: '700' }]}>{t('signin.advanced')}</Text>
+        <Field
+          label={t('settings.server')}
+          value={serverUrl}
+          onChangeText={setServerUrl}
+          autoCapitalize="none"
+          keyboardType="url"
+          note={t('signin.serverHint')}
+          testID="signin-server"
+        />
+        {serverNotice ? <Notice tone="info" body={serverNotice} /> : null}
+        <Button label={t('signin.serverTest')} variant="secondary" onPress={() => void testAndSaveServer()} loading={serverBusy} disabled={!online} fullWidth />
+        <View style={{ height: spacing.sm }} />
+        <Button label={t('signin.serverReset')} variant="ghost" onPress={() => void restoreBuildDefault()} fullWidth />
+      </Card>
+
       <Text style={[typography.caption, { color: colors.textMuted, marginTop: spacing.lg }]}>{t('auth.needInternet')}</Text>
       <Text style={[typography.caption, { color: colors.textMuted, marginTop: spacing.sm }]}>
-        {t('settings.server')}: {API_BASE_URL}
+        {t('settings.server')}: {getApiBaseUrl()}
       </Text>
       <Text style={[typography.caption, { color: colors.textMuted }]}>
-        {APP_INFO.name} {APP_INFO.version}
+        {APP_INFO.name} {APP_INFO.version} (built for {BUILD_TIME_API_URL})
       </Text>
     </Screen>
   );

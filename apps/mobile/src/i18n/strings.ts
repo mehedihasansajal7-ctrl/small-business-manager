@@ -77,6 +77,11 @@ export const STRINGS = {
 
   // ------------------------------------------------------------------ auth
   'auth.signIn': { en: 'Sign in', bn: 'সাইন ইন' },
+  'signin.advanced': { en: 'Advanced: which server?', bn: 'সার্ভারের ঠিকানা' },
+  'signin.serverHint': { en: 'Where the API runs. On a phone use the computer address and port, e.g. http://192.168.0.20:8787 - the emulator default (10.0.2.2) will not work on a real device.', bn: 'API কোথায় চলছে সেটির ঠিকানা। ফোনে কম্পিউটারের ঠিকানা ও পোর্ট দিন, যেমন http://192.168.0.20:8787 - ইমুলেটরের ডিফল্ট (10.0.2.2) আসল ফোনে কাজ করবে না।' },
+  'signin.serverTest': { en: 'Test and save this server', bn: 'সংযোগ পরীক্ষা করে সংরক্ষণ করুন' },
+  'signin.serverOk': { en: 'Server saved.', bn: 'সার্ভার সংরক্ষিত হয়েছে।' },
+  'signin.serverReset': { en: 'Back to the address this build was made for.', bn: 'এই অ্যাপ যে ঠিকানার জন্য তৈরি, সেটিতে ফিরে যান।' },
   'auth.signUp': { en: 'Create account', bn: 'অ্যাকাউন্ট তৈরি' },
   'auth.signOut': { en: 'Sign out', bn: 'সাইন আউট' },
   'auth.email': { en: 'Email', bn: 'ইমেইল' },

@@ -24,6 +24,12 @@ declare const process: { env: Record<string, string | undefined> };
  */
 const DEFAULT_API_URL = 'http://10.0.2.2:8787';
 
+/**
+ * Exported so `src/config/server-url.ts` can offer it as the "reset to default"
+ * value; the runtime override normally wins over `API_BASE_URL` below.
+ */
+export { DEFAULT_API_URL };
+
 function readExtraApiUrl(): string | undefined {
   const extra = Constants.expoConfig?.extra as { apiUrl?: unknown } | undefined;
   return typeof extra?.apiUrl === 'string' ? extra.apiUrl : undefined;

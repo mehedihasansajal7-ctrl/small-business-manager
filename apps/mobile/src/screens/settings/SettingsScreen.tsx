@@ -10,7 +10,8 @@ import * as api from '../../api/endpoints';
 import { describeError } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
 import { Button, Card, Divider, Field, ListRow, Notice, Screen, SectionTitle, Segmented, Select, Toggle } from '../../components';
-import { APP_INFO, API_BASE_URL } from '../../config/env';
+import { APP_INFO } from '../../config/env';
+import { BUILD_TIME_API_URL, getApiBaseUrl } from '../../config/server-url';
 import { resetDatabase } from '../../offline/db';
 import { localUnits } from '../../offline/repository';
 import { useI18n, type AppLocale } from '../../i18n';
@@ -245,7 +246,7 @@ export function SettingsScreen(_props: Props) {
 
       <SectionTitle title={t('settings.server')} />
       <Card>
-        <ListRow title={t('settings.server')} subtitle={API_BASE_URL} />
+        <ListRow title={t('settings.server')} subtitle={`${getApiBaseUrl()}  (built for ${BUILD_TIME_API_URL})`} />
         <ListRow title={t('settings.version')} subtitle={`${APP_INFO.name} ${APP_INFO.version} • ${APP_INFO.androidPackage}`} />
         <ListRow title={language === 'bn' ? 'সাইন আউট' : 'Sign out'} onPress={() => void signOut()} right={<Text style={[typography.caption, { color: colors.danger }]}>→</Text>} />
       </Card>
