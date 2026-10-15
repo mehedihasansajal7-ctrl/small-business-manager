@@ -181,7 +181,7 @@ jobs:
           The app is a client and needs a Small Business Manager API. On the sign-in screen expand **Advanced: which server?**, type the address (for example `\`${{ inputs.apiUrl }}\``), tap **Test and save this server**, then sign in. This build was baked with that address as a default only — the address you save inside the app wins.
 
           ### Language
-          Fully bilingual, **Bangla by default**. The switcher is on the **sign-in screen itself** (so it is reachable before login) and in **Settings → Language**.
+          Fully bilingual, **English by default** (since v0.1.3). The switcher is on the **sign-in screen itself** (so it is reachable before login) and in **Settings → Language**.
 
           ${{ inputs.releaseNotes }}
 
@@ -208,7 +208,7 @@ jobs:
           অ্যাপটি একটি ক্লায়েন্ট, এটির জন্য Small Business Manager API দরকার। সাইন-ইন স্ক্রিনে **Advanced: which server?** খুলে ঠিকানা লিখুন (যেমন `\`${{ inputs.apiUrl }}\``), **Test and save this server** চাপুন, তারপর সাইন-ইন করুন। ডিফল্ট ঠিকানাটি কেবল নমুনা — অ্যাপের ভেতরে সংরক্ষিত ঠিকানাই আসলে ব্যবহার হয়।
 
           ### ভাষা
-          সম্পূর্ণ দ্বিভাষিক, **ডিফল্ট বাংলা**। ভাষা বদলানোর বোতামটি **সাইন-ইন স্ক্রিনেই** আছে (লগইনের আগেই পাওয়া যায়) এবং **Settings → Language**-এও আছে।
+          সম্পূর্ণ দ্বিভাষিক, **ডিফল্ট এখন ইংরেজি** (v0.1.3 থেকে)। বাংলায় বদলাতে চাইলে বোতামটি **সাইন-ইন স্ক্রিনেই** আছে (লগইনের আগেই পাওয়া যায়) এবং **Settings → Language**-এও আছে।
 
           ### সৎ সীমাবদ্ধতা
           - এটি side-load বিল্ড, Google Play-তে নেই; নতুন APK পুরোনোটির উপরে ইনস্টল করে আপডেট করুন।
