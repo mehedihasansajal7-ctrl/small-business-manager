@@ -3,7 +3,7 @@ import { businesses as businessApi, auth as authApi } from '../api/endpoints';
 import { ApiError, onUnauthorized } from '../api/client';
 import type { BusinessCurrent, MeResponse } from '../api/types';
 import { DEFAULT_LOCALE, isLocale, translate, type Locale, type MessageKey, type Vars } from '../i18n';
-import { applyTheme, persistTheme, readThemeChoice, resolveTheme, systemPrefersDark, type ResolvedTheme, type ThemeChoice } from '../theme/theme';
+import { applyTheme, persistTheme, readThemeChoice, resolveTheme, type ResolvedTheme, type ThemeChoice } from '../theme/theme';
 import { getSyncCoordinator } from '../offline/sync';
 import { deviceId } from '../offline/localStorage';
 import { META_KEYS, getMeta, setMeta } from '../offline/db';
@@ -79,27 +79,22 @@ function readStoredLocale(): Locale {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(() => readStoredLocale());
   const [themeChoice, setThemeChoiceState] = useState<ThemeChoice>(() => readThemeChoice());
-  const [systemDark, setSystemDark] = useState<boolean>(() => systemPrefersDark());
   const [me, setMe] = useState<MeResponse | null>(null);
   const [business, setBusiness] = useState<BusinessCurrent | null>(null);
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const resolvedTheme = resolveTheme(themeChoice, systemDark);
+  // There is no "System" mode any more, so the resolved theme IS the choice.
+  const resolvedTheme = resolveTheme(themeChoice);
 
   // ---------------------------------------------------------------- theme
   useEffect(() => {
     applyTheme(resolvedTheme);
-  }, [resolvedTheme]);
-
-  useEffect(() => {
-    if (typeof matchMedia !== 'function') return;
-    const media = matchMedia('(prefers-color-scheme: dark)');
-    const onChange = () => setSystemDark(media.matches);
-    media.addEventListener('change', onChange);
-    return () => media.removeEventListener('change', onChange);
-  }, []);
+    // Persist it explicitly: the OS preference decides only the very first run,
+    // after which the visible choice is what the person actually set.
+    persistTheme(themeChoice);
+  }, [resolvedTheme, themeChoice]);
 
   useEffect(() => {
     document.documentElement.lang = locale === 'en' ? 'en' : 'bn';

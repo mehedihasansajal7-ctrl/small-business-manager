@@ -216,7 +216,7 @@ export function SettingsScreen(_props: Props) {
       <SectionTitle title={t('settings.theme')} />
       <Segmented
         options={[
-          { value: 'system' as ThemeMode, label: t('settings.themeSystem') },
+
           { value: 'light' as ThemeMode, label: t('settings.themeLight') },
           { value: 'dark' as ThemeMode, label: t('settings.themeDark') },
         ]}

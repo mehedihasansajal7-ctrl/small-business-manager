@@ -80,8 +80,7 @@ export function Layout({ children }: { readonly children: ReactNode }) {
           <label className="topbar__select">
             <span className="sr-only">{t('common.theme')}</span>
             <select className="input input--compact" value={themeChoice} onChange={(event) => setThemeChoice(event.target.value as typeof themeChoice)}>
-              <option value="system">{t('common.themeSystem')}</option>
-              <option value="light">{t('common.themeLight')}</option>
+                            <option value="light">{t('common.themeLight')}</option>
               <option value="dark">{t('common.themeDark')}</option>
             </select>
           </label>

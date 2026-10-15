@@ -12,7 +12,7 @@ import { PREF_KEYS, readPref, writePref } from '../prefs/storage';
  * vocabulary of `@sbm/domain` (pending / needs attention / conflict / rejected).
  */
 
-export type ThemeMode = 'light' | 'dark' | 'system';
+export type ThemeMode = 'light' | 'dark';
 
 export interface ThemeColors {
   readonly background: string;
@@ -109,25 +109,37 @@ const ThemeContext = createContext<ThemeValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemScheme = useColorScheme();
-  const [mode, setModeState] = useState<ThemeMode>('system');
+  // No "System" mode is offered any more, so the initial value is whatever the
+  // device is using RIGHT NOW - resolved once, then stored explicitly, so that
+  // dropping the option never changes the theme under somebody's feet.
+  const [mode, setModeState] = useState<ThemeMode>(() => (systemScheme === 'dark' ? 'dark' : 'light'));
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const stored = await readPref(PREF_KEYS.theme);
-      if (!cancelled && (stored === 'light' || stored === 'dark' || stored === 'system')) setModeState(stored);
+      if (cancelled) return;
+      if (stored === 'light' || stored === 'dark') {
+        setModeState(stored);
+        return;
+      }
+      // First run (or a legacy 'system' value): keep the current appearance and
+      // make it an explicit, visible choice.
+      const initial: ThemeMode = systemScheme === 'dark' ? 'dark' : 'light';
+      setModeState(initial);
+      await writePref(PREF_KEYS.theme, initial);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [systemScheme]);
 
   const setMode = useCallback(async (next: ThemeMode) => {
     setModeState(next);
     await writePref(PREF_KEYS.theme, next);
   }, []);
 
-  const scheme: 'light' | 'dark' = mode === 'system' ? (systemScheme === 'dark' ? 'dark' : 'light') : mode;
+  const scheme: 'light' | 'dark' = mode;
 
   const value = useMemo<ThemeValue>(
     () => ({
