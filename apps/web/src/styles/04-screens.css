@@ -87,6 +87,19 @@
   gap: 8px;
 }
 
+/*
+ * A statement section inside a card (balance sheet: Assets / Liabilities / Equity).
+ *
+ * Deliberately NOT `.sheet`: that class is the mobile nav drawer's FULL-SCREEN
+ * fixed overlay (`position: fixed; inset: 0; z-index: 40`). Reusing it here made
+ * every section an invisible layer over the whole page, so after opening the
+ * Balance sheet every click landed on those overlays and the app felt frozen.
+ */
+.sheetsec {
+  display: block;
+  margin-top: 14px;
+}
+
 .sheet__title {
   margin: 8px 0 0;
   font-size: 0.85rem;

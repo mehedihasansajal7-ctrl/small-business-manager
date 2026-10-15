@@ -1,3 +1,4 @@
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Layout } from './components/Layout';
 import { Loading } from './components/States';
 import { cycleIdFromRoute, navigate, useRoute } from './state/router';
@@ -33,7 +34,15 @@ export function App() {
     return <Loading />;
   }
 
-  return <Layout>{cycleId ? <CycleDetailScreen cycleId={cycleId} /> : renderScreen(route.path)}</Layout>;
+  // The boundary is keyed on the route so navigating away from a broken screen
+  // clears the error instead of showing it on every page.
+  return (
+    <Layout>
+      <ErrorBoundary key={route.path} scope={route.path}>
+        {cycleId ? <CycleDetailScreen cycleId={cycleId} /> : renderScreen(route.path)}
+      </ErrorBoundary>
+    </Layout>
+  );
 }
 
 function renderScreen(path: string) {

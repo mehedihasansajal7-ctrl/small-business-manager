@@ -228,7 +228,7 @@ function SheetSection({
 }) {
   const { t } = useT();
   return (
-    <div className="sheet">
+    <div className="sheetsec">
       <h3 className="sheet__title">{title}</h3>
       <DataTable
         columns={[
