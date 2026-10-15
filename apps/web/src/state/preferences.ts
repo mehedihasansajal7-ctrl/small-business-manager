@@ -48,7 +48,9 @@ export function readBool(key: string, fallback: boolean): boolean {
 }
 
 export const PREF_KEYS = {
-  locale: 'sbm.locale',
+  // v2: the previous key held the old Bangla default, not a real user choice,
+  // so it is deliberately ignored once - the product now starts in English.
+  locale: 'sbm.locale.v2',
   theme: 'sbm.theme',
   deviceId: 'sbm.deviceId',
   installDismissed: 'sbm.installDismissed',

@@ -81,7 +81,7 @@ export class AuthService {
     const now = new Date().toISOString();
     this.db.run(
       'INSERT INTO users (id, email, display_name, password_hash, password_salt, locale, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',
-      [id, email, input.displayName, hash, salt, input.locale ?? 'bn-BD', now],
+      [id, email, input.displayName, hash, salt, input.locale ?? 'en', now],
     );
     const user = this.db.get<UserRow>('SELECT * FROM users WHERE id = ?', [id]);
     if (!user) throw HttpError.server('Failed to create the account');

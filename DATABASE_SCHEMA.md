@@ -59,7 +59,7 @@ byte sizes, token counts). No `INTEGER` column stores money.
 | `display_name` | TEXT | NOT NULL |
 | `password_hash` | TEXT | NOT NULL — scrypt, 64 bytes hex |
 | `password_salt` | TEXT | NOT NULL — 16 random bytes hex |
-| `locale` | TEXT | NOT NULL DEFAULT `'bn-BD'` |
+| `locale` | TEXT | NOT NULL DEFAULT `'en'` |
 | `is_active` | INTEGER | NOT NULL DEFAULT 1 |
 | `created_at` | TEXT | NOT NULL |
 | `last_login_at` | TEXT | nullable |
@@ -90,7 +90,7 @@ claim, so a tampered client cannot address another workspace.
 | `slug` | TEXT | NOT NULL, **UNIQUE** (auto-suffixed `-2`, `-3`…) |
 | `currency` | TEXT | NOT NULL DEFAULT `'BDT'` |
 | `timezone` | TEXT | NOT NULL DEFAULT `'Asia/Dhaka'` |
-| `locale` | TEXT | NOT NULL DEFAULT `'bn-BD'` |
+| `locale` | TEXT | NOT NULL DEFAULT `'en'` |
 | `country` | TEXT | NOT NULL DEFAULT `'BD'` |
 | `farming_types` | TEXT | NOT NULL DEFAULT `'[]'` (JSON) |
 | `enabled_modules` | TEXT | NOT NULL DEFAULT `'[]'` (JSON) |

@@ -134,7 +134,7 @@ Copy `.env.example` to `.env` (it is git-ignored) and edit. The variables that m
 | `DATABASE_FILE` | *(empty â†’ `DATA_DIR/sbm.db`)* | explicit DB path |
 | `DEFAULT_TIMEZONE` | `Asia/Dhaka` | business date logic |
 | `DEFAULT_CURRENCY` | `BDT` | money formatting and scale |
-| `DEFAULT_LOCALE` | `bn-BD` | default UI language |
+| `DEFAULT_LOCALE` | `bn-BD` | initial UI language (Bangla is selectable in-app and on the sign-in screen) |
 | `SESSION_SECRET` | *(empty)* | **required in `shared` mode** (â‰¥32 chars). Generated + persisted to `DATA_DIR/.session_secret` (mode 0600) in local mode |
 | `SESSION_TTL_HOURS` | `720` | 30-day sessions |
 | `INSECURE_COOKIES` | unset | `1` only for local HTTP |

@@ -2,7 +2,7 @@ import { CORE_MESSAGES } from './messages.core';
 import { SCREEN_MESSAGES } from './messages.screens';
 
 /**
- * Bilingual UI strings. Bangla is the default locale for this product, so every
+ * Bilingual UI strings. English starts active and Bangla is one tap away, so every
  * key MUST have a `bn` value; `en` is the fallback when a key is missing.
  */
 export const MESSAGES = { ...CORE_MESSAGES, ...SCREEN_MESSAGES } as const;
@@ -12,11 +12,12 @@ export type MessageKey = keyof typeof MESSAGES;
 export type Locale = 'bn-BD' | 'en';
 
 export const LOCALES: readonly { readonly id: Locale; readonly label: string }[] = Object.freeze([
-  { id: 'bn-BD', label: 'বাংলা' },
+  // The default first, so the switcher mirrors the initial language.
   { id: 'en', label: 'English' },
+  { id: 'bn-BD', label: 'বাংলা' },
 ]);
 
-export const DEFAULT_LOCALE: Locale = 'bn-BD';
+export const DEFAULT_LOCALE: Locale = 'en';
 
 export function isLocale(value: unknown): value is Locale {
   return value === 'bn-BD' || value === 'en';

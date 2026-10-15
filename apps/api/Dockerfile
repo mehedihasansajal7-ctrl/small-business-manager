@@ -39,7 +39,7 @@ ENV NODE_ENV=production \
     WEB_DIR=/app/apps/web/dist \
     DEFAULT_TIMEZONE=Asia/Dhaka \
     DEFAULT_CURRENCY=BDT \
-    DEFAULT_LOCALE=bn-BD
+    DEFAULT_LOCALE=en
 
 # The whole built tree is copied so the workspace symlinks (@sbm/domain) stay valid.
 COPY --from=build /app /app

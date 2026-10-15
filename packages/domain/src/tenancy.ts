@@ -163,7 +163,7 @@ export function defaultBusiness(input: {
     slug: slugify(input.name),
     currency: input.currency ?? 'BDT',
     timezone: input.timezone ?? 'Asia/Dhaka',
-    locale: input.locale ?? 'bn-BD',
+    locale: input.locale ?? 'en',
     country: input.country ?? 'BD',
     farmingTypes: [],
     enabledModules: [...DEFAULT_MODULES],

@@ -7,7 +7,7 @@ import { DEFAULT_LOCALE, isAppLocale, translate, type AppLocale, type StringKey 
 /**
  * i18n provider.
  *
- * - Bangla is the default (`bn-BD`), matching the target partners.
+ * - English is the initial language; Bangla (`bn-BD`) is one tap away.
  * - The choice is persisted, so it survives restarts.
  * - Money, digits and dates are formatted by `@sbm/domain`, never by hand: the
  *   same rupee/taka grouping, the same Bangla digit map and the same month names

@@ -47,7 +47,7 @@ you run yourself, or with any OpenAI-compatible endpoint you have free access to
 ### Bangla + English
 Bilingual by construction: Bangla names for accounts, units, roles, statuses and dates,
 Bangla digits (`৳১২,৩৪,৫৬৭.৮৯`), and **South-Asian lakh/crore grouping** for BDT/INR.
-Defaults are `BDT`, `bn-BD`, `Asia/Dhaka`.
+Defaults are `BDT`, `en` (English initial language, Bangla one tap away), `Asia/Dhaka`.
 
 ---
 

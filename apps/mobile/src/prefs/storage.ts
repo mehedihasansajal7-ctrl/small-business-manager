@@ -42,7 +42,9 @@ export async function writeJsonPref(key: string, value: unknown): Promise<void> 
 }
 
 export const PREF_KEYS = {
-  locale: 'sbm.locale',
+  // v2: the old key only ever held the previous Bangla default, so it is ignored
+  // once - the app now starts in English.
+  locale: 'sbm.locale.v2',
   theme: 'sbm.theme',
   /** Last successful `/api/auth/me` + business load, so the app opens offline. */
   authSnapshot: 'sbm.auth.snapshot',

@@ -264,7 +264,7 @@ account has `nameBn`, every unit has `nameBn`, `products.name_bn`, `farming_type
 `formatMoney` supports `banglaDigits` (০-৯) and **South-Asian grouping** (`৳12,34,567.89`) for
 BDT/INR, `formatDateBn` renders Bangla months, and Bangla digits are parsed on input
 (`normalizeDecimalInput`, `parseMoney`). Defaults are `DEFAULT_CURRENCY=BDT`,
-`DEFAULT_LOCALE=bn-BD`, `DEFAULT_TIMEZONE=Asia/Dhaka`.
+`DEFAULT_LOCALE=en`, `DEFAULT_TIMEZONE=Asia/Dhaka`.
 
 **Cost.** Bangla strings live in TypeScript constants, so there is no external translation file
 and no way to add a fourth language without code changes. Only two languages are supported end

@@ -60,7 +60,7 @@ CREATE TABLE local_business (
   name TEXT NOT NULL,
   currency TEXT NOT NULL DEFAULT 'BDT',
   timezone TEXT NOT NULL DEFAULT 'Asia/Dhaka',
-  locale TEXT NOT NULL DEFAULT 'bn-BD',
+  locale TEXT NOT NULL DEFAULT 'en',
   farming_types TEXT NOT NULL DEFAULT '[]',
   revision INTEGER NOT NULL DEFAULT 1,
   synced_at TEXT NOT NULL

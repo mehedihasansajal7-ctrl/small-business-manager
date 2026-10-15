@@ -36,7 +36,7 @@ CREATE TABLE users (
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   password_salt TEXT NOT NULL,
-  locale TEXT NOT NULL DEFAULT 'bn-BD',
+  locale TEXT NOT NULL DEFAULT 'en',
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   last_login_at TEXT
@@ -60,7 +60,7 @@ CREATE TABLE businesses (
   slug TEXT NOT NULL UNIQUE,
   currency TEXT NOT NULL DEFAULT 'BDT',
   timezone TEXT NOT NULL DEFAULT 'Asia/Dhaka',
-  locale TEXT NOT NULL DEFAULT 'bn-BD',
+  locale TEXT NOT NULL DEFAULT 'en',
   country TEXT NOT NULL DEFAULT 'BD',
   farming_types TEXT NOT NULL DEFAULT '[]',
   enabled_modules TEXT NOT NULL DEFAULT '[]',

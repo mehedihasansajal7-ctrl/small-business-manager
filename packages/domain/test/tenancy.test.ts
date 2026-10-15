@@ -94,7 +94,7 @@ describe('business defaults', () => {
     expect(business.slug).toBe('rahim-agro-store');
     expect(business.currency).toBe('BDT');
     expect(business.timezone).toBe('Asia/Dhaka');
-    expect(business.locale).toBe('bn-BD');
+    expect(business.locale).toBe('en');
     expect(business.plan).toBe('free');
     expect(business.revision).toBe(1);
     expect(business.farmingTypes).toEqual([]);

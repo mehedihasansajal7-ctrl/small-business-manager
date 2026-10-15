@@ -143,7 +143,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     databaseFile: env('DATABASE_FILE') || join(dataDir, 'sbm.db'),
     defaultTimezone: env('DEFAULT_TIMEZONE') || 'Asia/Dhaka',
     defaultCurrency: env('DEFAULT_CURRENCY') || 'BDT',
-    defaultLocale: env('DEFAULT_LOCALE') || 'bn-BD',
+    defaultLocale: env('DEFAULT_LOCALE') || 'en',
     sessionSecret,
     sessionTtlHours: num('SESSION_TTL_HOURS', 720),
     secureCookies: !bool('INSECURE_COOKIES'),

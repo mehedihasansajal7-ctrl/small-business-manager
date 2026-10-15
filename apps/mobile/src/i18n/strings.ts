@@ -1,5 +1,5 @@
 /**
- * Bilingual strings. Bangla (`bn-BD`) is the default because the app is built
+ * Bilingual strings. English (`en`) is the initial language; `bn-BD` is one tap away.
  * for Bangladeshi partners, but every key has an English value too, and the
  * choice is persisted per device.
  *
@@ -353,8 +353,8 @@ export const STRINGS = {
 
 export type StringKey = keyof typeof STRINGS;
 
-export const DEFAULT_LOCALE = 'bn-BD';
-export const LOCALES = ['bn-BD', 'en'] as const;
+export const DEFAULT_LOCALE = 'en';
+export const LOCALES = ['en', 'bn-BD'] as const;
 export type AppLocale = (typeof LOCALES)[number];
 
 export function isAppLocale(value: string): value is AppLocale {
