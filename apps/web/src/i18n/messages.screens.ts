@@ -149,6 +149,7 @@ export const SCREEN_MESSAGES = {
   'rep.cashFlow': { en: 'Cash flow', bn: 'নগদ প্রবাহ' },
   'rep.receivables': { en: 'Receivables', bn: 'প্রাপ্য হিসাব' },
   'rep.payables': { en: 'Payables', bn: 'প্রদেয় হিসাব' },
+  'rep.noTransactions': { en: 'No transactions fall in this period yet, so every figure is zero. Record a purchase or a sale and this report fills in immediately.', bn: 'এই সময়ের মধ্যে এখনো কোনো লেনদেন নেই, তাই সব ঘরে শূন্য দেখাচ্ছে। একটি ক্রয় বা বিক্রি লিখুন, রিপোর্টটি সাথে সাথেই পূর্ণ হয়ে যাবে।' },
   'rep.asOf': { en: 'As of', bn: 'তারিখ অনুযায়ী' },
   'rep.balanced': { en: 'Balanced', bn: 'সমতুল্য' },
   'rep.notBalanced': { en: 'NOT balanced — please review', bn: 'সমতুল্য নয় — পর্যালোচনা করুন' },

@@ -28,12 +28,12 @@ export function ReportsScreen() {
   const canFinance = hasPermission(permissions, 'finance.view');
   const canReport = hasPermission(permissions, 'report.view');
 
-  const pnl = useResource(() => (canFinancials && tab === 'pnl' ? reports.profitAndLoss({ from, to }) : Promise.resolve(null)), [tab, from, to, canFinancials]);
-  const sheet = useResource(() => (canFinancials && tab === 'balance' ? reports.balanceSheet(asOf) : Promise.resolve(null)), [tab, asOf, canFinancials]);
-  const trial = useResource(() => (canFinancials && tab === 'trial' ? reports.trialBalance({ from, to }) : Promise.resolve(null)), [tab, from, to, canFinancials]);
-  const flow = useResource(() => (canFinance && tab === 'cash' ? reports.cashFlow({ from, to }) : Promise.resolve(null)), [tab, from, to, canFinance]);
-  const receivables = useResource(() => (canReport && tab === 'receivables' ? reports.receivables() : Promise.resolve(null)), [tab, canReport, snapshot.lastSyncedAt]);
-  const payables = useResource(() => (canReport && tab === 'payables' ? reports.payables() : Promise.resolve(null)), [tab, canReport, snapshot.lastSyncedAt]);
+  const pnl = useResource(() => (canFinancials && tab === 'pnl' ? reports.profitAndLoss({ from, to }) : Promise.resolve(null)), [tab, from, to, canFinancials, business?.id]);
+  const sheet = useResource(() => (canFinancials && tab === 'balance' ? reports.balanceSheet(asOf) : Promise.resolve(null)), [tab, asOf, canFinancials, business?.id]);
+  const trial = useResource(() => (canFinancials && tab === 'trial' ? reports.trialBalance({ from, to }) : Promise.resolve(null)), [tab, from, to, canFinancials, business?.id]);
+  const flow = useResource(() => (canFinance && tab === 'cash' ? reports.cashFlow({ from, to }) : Promise.resolve(null)), [tab, from, to, canFinance, business?.id]);
+  const receivables = useResource(() => (canReport && tab === 'receivables' ? reports.receivables() : Promise.resolve(null)), [tab, canReport, snapshot.lastSyncedAt, business?.id]);
+  const payables = useResource(() => (canReport && tab === 'payables' ? reports.payables() : Promise.resolve(null)), [tab, canReport, snapshot.lastSyncedAt, business?.id]);
 
   const tabs = [
     { id: 'pnl', label: t('rep.pnl') },
@@ -87,6 +87,9 @@ export function ReportsScreen() {
                     <TotalRow label={t('dash.netProfit')} value={<MoneyText value={data.netProfit} currency={currency} signed />} strong />
                     <TotalRow label={t('dash.cashBasis')} value={<MoneyText value={data.cashBasisResult} currency={currency} />} />
                   </Totals>
+                  {Number(data.revenue) === 0 && Number(data.costOfGoodsSold) === 0 && Number(data.operatingExpenses) === 0 && Number(data.otherIncome) === 0 ? (
+                    <Notice level="info">{t('rep.noTransactions')}</Notice>
+                  ) : null}
                   <Notice level="info">{data.note}</Notice>
                   <DataTable
                     columns={[

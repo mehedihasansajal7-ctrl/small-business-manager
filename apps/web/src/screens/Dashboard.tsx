@@ -28,9 +28,9 @@ export function DashboardScreen() {
   const [to, setTo] = useState(today());
   const [preset, setPreset] = useState('thisMonth');
 
-  const report = useResource(() => reportApi.dashboard({ from, to }), [from, to]);
+  const report = useResource(() => reportApi.dashboard({ from, to }), [from, to, business?.id]);
   const hasFarming = permissions.includes('farming.view');
-  const farming = useResource(() => (hasFarming ? farmingApi.dashboard() : Promise.resolve(null)), [hasFarming]);
+  const farming = useResource(() => (hasFarming ? farmingApi.dashboard() : Promise.resolve(null)), [hasFarming, business?.id]);
 
   const currency = business?.currency ?? 'BDT';
   const financialsVisible = canViewFinancialReports(permissions);
