@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { FARMING_TYPES } from '@sbm/domain';
-import { businesses as businessApi, catalog, reports as reportApi } from '../api/endpoints';
+import { auth as authApi, businesses as businessApi, catalog, reports as reportApi } from '../api/endpoints';
 import { EXPORT_TABLES } from '../api/endpointsFinance';
 import { ApiError, saveBlob } from '../api/client';
 import { hasPermission } from '../api/permissions';
@@ -45,6 +45,9 @@ export function SettingsScreen() {
   const [conversionFactor, setConversionFactor] = useState('');
   const [conversionNote, setConversionNote] = useState('');
   const [cacheCounts, setCacheCounts] = useState<readonly { store: CacheStore; count: number }[]>([]);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
   const units = useResource(() => catalog.units(), []);
 
@@ -77,6 +80,7 @@ export function SettingsScreen() {
           { id: 'profile', label: t('set.profile') },
           { id: 'visibility', label: t('set.visibility') },
           { id: 'units', label: t('set.units') },
+          { id: 'security', label: t('set.security') },
           { id: 'data', label: t('set.backup') },
         ]}
         active={tab}
@@ -225,6 +229,37 @@ export function SettingsScreen() {
             </AsyncState>
           </Card>
         </>
+      ) : null}
+
+      {tab === 'security' ? (
+        <Card title={t('set.security')} subtitle={t('set.securityHint')}>
+          <div className="grid grid--2">
+            <TextInput label={t('set.currentPassword')} type="password" autoComplete="current-password" value={currentPassword} onValueChange={setCurrentPassword} />
+            <span />
+            <TextInput label={t('auth.newPassword')} type="password" autoComplete="new-password" minLength={8} value={newPassword} onValueChange={setNewPassword} hint="8+ characters" />
+            <TextInput label={t('auth.confirmPassword')} type="password" autoComplete="new-password" minLength={8} value={confirmPassword} onValueChange={setConfirmPassword} />
+          </div>
+          <Button
+            variant="primary"
+            disabled={busy || !currentPassword || newPassword.length < 8}
+            onClick={() =>
+              run(async () => {
+                if (newPassword !== confirmPassword) {
+                  setError(t('auth.passwordMismatch'));
+                  return;
+                }
+                await authApi.changePassword({ currentPassword, newPassword });
+                setCurrentPassword('');
+                setNewPassword('');
+                setConfirmPassword('');
+                notify(t('set.passwordChanged'), 'success');
+              })
+            }
+          >
+            {t('set.changePassword')}
+          </Button>
+          <p className="muted">{t('set.passwordHint')}</p>
+        </Card>
       ) : null}
 
       {tab === 'data' ? (

@@ -76,6 +76,21 @@ export const CORE_MESSAGES = {
   'auth.switchBusiness': { en: 'Business', bn: 'ব্যবসা' },
   'auth.role': { en: 'Signed in as', bn: 'ভূমিকা' },
 
+  'auth.forgot': { en: 'Forgot your password?', bn: 'পাসওয়ার্ড ভুলে গেছেন?' },
+  'auth.resetHint': {
+    en: 'Enter the one-time code a partner read out to you, then choose a new password. No code yet? Ask an owner or admin to open Team → Reset password.',
+    bn: 'আপনার সঙ্গী যে একবার-ব্যবহারের কোডটি দিয়েছেন সেটি লিখে নতুন পাসওয়ার্ড দিন। কোড না থাকলে owner/admin-কে বলুন Team → Reset password খুলতে।',
+  },
+  'auth.resetCode': { en: 'Reset code', bn: 'রিসেট কোড' },
+  'auth.resetCodeHint': { en: 'Looks like ABCD-EFGH-JKLM. Valid for 30 minutes, one use only.', bn: 'ABCD-EFGH-JKLM এর মতো। ৩০ মিনিট বৈধ, একবারই ব্যবহারযোগ্য।' },
+  'auth.newPassword': { en: 'New password', bn: 'নতুন পাসওয়ার্ড' },
+  'auth.confirmPassword': { en: 'Confirm new password', bn: 'নতুন পাসওয়ার্ড আবার দিন' },
+  'auth.passwordMismatch': { en: 'The two passwords do not match.', bn: 'দুইবার লেখা পাসওয়ার্ড মিলছে না।' },
+  'auth.resetSubmit': { en: 'Set the new password', bn: 'নতুন পাসওয়ার্ড সেট করুন' },
+  'auth.resetDone': { en: 'Password changed.', bn: 'পাসওয়ার্ড বদলানো হয়েছে।' },
+  'auth.resetDoneHint': { en: 'Every device was signed out, including this one. Sign in again with the new password.', bn: 'সব ডিভাইস সাইন-আউট হয়েছে। নতুন পাসওয়ার্ড দিয়ে আবার সাইন ইন করুন।' },
+  'auth.backToSignIn': { en: 'Back to sign in', bn: 'সাইন ইনে ফিরে যান' },
+
   // ---------------------------------------------------------- setup wizard
   'setup.title': { en: 'First-run setup', bn: 'প্রথমবার সেটআপ' },
   'setup.step': { en: 'Step', bn: 'ধাপ' },

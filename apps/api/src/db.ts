@@ -793,6 +793,29 @@ CREATE TABLE number_sequences (
 CREATE UNIQUE INDEX idx_explicit_conversion_pair ON explicit_conversions(business_id, from_unit, to_unit);
   `,
   },
+  {
+    // Self-service password reset without an email provider: a partner with
+    // `member.manage` issues a one-time code, the person redeems it themselves.
+    // Only the SHA-256 of the code is stored, it expires, and it is single-use.
+    version: 7,
+    name: 'password_resets',
+    sql: `
+CREATE TABLE password_resets (
+  id TEXT PRIMARY KEY,
+  business_id TEXT REFERENCES businesses(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_password_reset_user ON password_resets(user_id, expires_at);
+CREATE INDEX idx_password_reset_expiry ON password_resets(expires_at);
+  `,
+  },
 ];
 
 export class Database {

@@ -53,6 +53,8 @@ export function buildRouter(deps: RouteDeps): Router {
   const loginLimiter = new RateLimiter(config.rateLimits.loginPer15Min, 15 * 60_000);
   const registerLimiter = new RateLimiter(config.rateLimits.registerPerHour, 60 * 60_000);
   const inviteLimiter = new RateLimiter(config.rateLimits.invitePerHour, 60 * 60_000);
+  // Codes are guessable in principle, so redemption is throttled per IP.
+  const resetLimiter = new RateLimiter(10, 15 * 60_000);
 
   const requireSession = (ctx: RequestContext): SessionContext => {
     // Two ways in, one session:
@@ -279,6 +281,76 @@ export function buildRouter(deps: RouteDeps): Router {
       ...(body.status !== undefined ? { status: String(body.status) } : {}),
       ...(Array.isArray(body.grants) ? { grants: body.grants.map(String) } : {}),
       ...(Array.isArray(body.denials) ? { denials: body.denials.map(String) } : {}),
+    });
+    return { ok: true };
+  });
+
+  // -------------------------------------------------- password reset (no email)
+  //
+  // Deployment reality: no SMTP, no paid provider. A partner with `member.manage`
+  // generates a one-time code and reads it out; the person redeems it themselves
+  // from any device. The code is shown once, expires in 30 minutes, is single-use
+  // and is stored only as a SHA-256 hash.
+
+  router.post('/api/members/:id/reset-code', (ctx) => {
+    const caller = requireCaller(ctx);
+    inviteLimiter.consume(clientIp(ctx.req));
+    const target = repo.passwordResetTarget(caller, ctx.params.id as string);
+    const issued = auth.issueResetCode(target.userId, target.email, caller.business.id, caller.user.id, 30);
+    repo.audit({
+      businessId: caller.business.id,
+      actorId: caller.user.id,
+      actorEmail: caller.user.email,
+      action: 'member.reset_code',
+      entityType: 'member',
+      entityId: ctx.params.id as string,
+      detail: { email: target.email, expiresAt: issued.expiresAt },
+    });
+    return {
+      email: target.email,
+      displayName: target.displayName,
+      code: issued.code,
+      expiresAt: issued.expiresAt,
+      note: 'Read this code out to the person. It is shown only this once, works for 30 minutes and signs them out everywhere when used.',
+    };
+  });
+
+  /** Redeem a reset code. Anonymous: the whole point is that they cannot sign in. */
+  router.post('/api/auth/password/reset', (ctx) => {
+    resetLimiter.consume(clientIp(ctx.req));
+    const body = asRecord(ctx.body, 'body');
+    const email = requireString(body.email, 'email', { maxLength: 254 });
+    const code = requireString(body.code, 'code', { maxLength: 40 });
+    const newPassword = requireString(body.newPassword, 'newPassword', { maxLength: 200, minLength: 8 });
+    const user = auth.consumeResetCode(email, code);
+    if (!user) throw HttpError.badRequest('INVALID_RESET_CODE', 'That reset code is not valid, has expired or was already used. Ask for a new one.');
+    auth.setPassword(user.id, newPassword);
+    repo.audit({
+      businessId: null,
+      actorId: user.id,
+      actorEmail: user.email,
+      action: 'auth.password_reset',
+      entityType: 'user',
+      entityId: user.id,
+    });
+    return { ok: true, email: user.email };
+  });
+
+  /** Change your own password while signed in. */
+  router.post('/api/auth/password/change', (ctx) => {
+    const session = requireSession(ctx);
+    const body = asRecord(ctx.body, 'body');
+    const currentPassword = requireString(body.currentPassword, 'currentPassword', { maxLength: 200 });
+    const newPassword = requireString(body.newPassword, 'newPassword', { maxLength: 200, minLength: 8 });
+    const changed = auth.changePassword(session.user.id, currentPassword, newPassword, session.sessionId);
+    if (!changed) throw HttpError.badRequest('WRONG_PASSWORD', 'Your current password is not correct');
+    repo.audit({
+      businessId: session.businessId ?? null,
+      actorId: session.user.id,
+      actorEmail: session.user.email,
+      action: 'auth.password_change',
+      entityType: 'user',
+      entityId: session.user.id,
     });
     return { ok: true };
   });

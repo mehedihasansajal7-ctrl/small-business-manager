@@ -101,3 +101,31 @@ describe('posted documents can be corrected from the UI', () => {
     expect(sales).toMatch(/voidReason\.trim\(\)\.length < 5/);
   });
 });
+
+/**
+ * There is no email provider, so a forgotten password is recovered with a code a
+ * partner issues. Both halves - issuing and redeeming - must stay reachable.
+ */
+describe('a locked-out person can always get back in', () => {
+  it('keeps the reset form on the sign-in screen', () => {
+    const signIn = readFileSync(join(SRC, 'screens', 'SignIn.tsx'), 'utf8');
+    expect(signIn).toContain('auth.forgot');
+    expect(signIn).toContain('resetPassword');
+    expect(readFileSync(join(SRC, 'api', 'endpoints.ts'), 'utf8')).toContain('/api/auth/password/reset');
+    expect(signIn).toContain('auth.resetCode');
+    expect(signIn).toContain('auth.passwordMismatch');
+  });
+
+  it('keeps the code issuer in Team, behind member.manage', () => {
+    const team = readFileSync(join(SRC, 'screens', 'Team.tsx'), 'utf8');
+    expect(team).toContain('team.resetPassword');
+    expect(team).toContain('resetCode');
+    expect(team).toContain('team.resetOnce');
+  });
+
+  it('lets a signed-in person change their own password', () => {
+    const settings = readFileSync(join(SRC, 'screens', 'Settings.tsx'), 'utf8');
+    expect(settings).toContain('changePassword');
+    expect(settings).toContain("'set.security'");
+  });
+});

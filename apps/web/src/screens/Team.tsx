@@ -6,7 +6,7 @@ import { hasPermission } from '../api/permissions';
 import { AsyncState, Restricted } from '../components/States';
 import { DataTable, type Column } from '../components/DataTable';
 import { DateText, DateTimeText } from '../components/MoneyText';
-import { Badge, Button, Card, CopyButton, Notice, PageHeader, SelectInput, Tabs, TextInput } from '../components/ui';
+import { Badge, Button, Card, CopyButton, Modal, Notice, PageHeader, SelectInput, Tabs, TextInput } from '../components/ui';
 import { useApp, useT } from '../state/AppContext';
 import { useResource } from '../offline/useSync';
 import type { AuditRow, CreatedInvite, InviteRow, MemberRow } from '../api/types';
@@ -23,6 +23,12 @@ export function TeamScreen() {
   const [joinCode, setJoinCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Password reset: a code is issued here, shown once, and redeemed by the person
+  // on the sign-in screen from any device (no email provider in this deployment).
+  const [resetTarget, setResetTarget] = useState<MemberRow | null>(null);
+  const [resetIssued, setResetIssued] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [resetBusy, setResetBusy] = useState(false);
 
   const members = useResource(() => memberApi.list(), []);
   const invites = useResource(() => (hasPermission(permissions, 'member.invite') ? memberApi.invites() : Promise.resolve([] as InviteRow[])), [permissions.join(',')]);
@@ -63,6 +69,18 @@ export function TeamScreen() {
               })}
               options={roleOptions}
             />
+          ) : null}
+          {canManage && row.status === 'active' && row.userId !== me?.user.id ? (
+            <Button
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setResetTarget(row);
+                setResetIssued(null);
+              }}
+            >
+              {t('team.resetPassword')}
+            </Button>
           ) : null}
           {canManage && row.status === 'active' && row.userId !== me?.user.id ? (
             <Button variant="ghost" disabled={busy} onClick={() => run(async () => {
@@ -238,6 +256,61 @@ export function TeamScreen() {
           </Button>
         </Card>
       ) : null}
+
+      <Modal
+        open={resetTarget !== null}
+        title={t('team.resetTitle')}
+        onClose={() => setResetTarget(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setResetTarget(null)} disabled={resetBusy}>
+              {t('common.close')}
+            </Button>
+            {resetIssued ? (
+              <CopyButton text={resetIssued.code} label={t('common.copy')} />
+            ) : (
+              <Button
+                variant="primary"
+                disabled={resetBusy}
+                onClick={() => {
+                  if (!resetTarget) return;
+                  setResetBusy(true);
+                  memberApi
+                    .resetCode(resetTarget.id)
+                    .then((issued) => {
+                      setResetIssued({ code: issued.code, expiresAt: issued.expiresAt });
+                      notify(t('team.resetIssued'), 'success');
+                    })
+                    .catch((cause: unknown) => setError(cause instanceof ApiError ? cause.message : String(cause)))
+                    .finally(() => setResetBusy(false));
+                }}
+              >
+                {t('team.resetGenerate')}
+              </Button>
+            )}
+          </>
+        }
+      >
+        <p className="muted">{t('team.resetExplain')}</p>
+        {resetTarget ? (
+          <p>
+            <strong>{resetTarget.displayName}</strong> · {resetTarget.email}
+          </p>
+        ) : null}
+        {resetIssued ? (
+          <>
+            <p className="auth__code mono" style={{ fontSize: '1.4rem', letterSpacing: '0.08em', fontWeight: 700 }}>
+              {resetIssued.code}
+            </p>
+            <Notice level="warn">{t('team.resetOnce')}</Notice>
+            <p className="muted">
+              {t('team.resetExpires')}: {new Date(resetIssued.expiresAt).toLocaleString()}
+            </p>
+          </>
+        ) : (
+          <Notice level="info">{t('team.resetExplainHow')}</Notice>
+        )}
+      </Modal>
     </>
   );
 }

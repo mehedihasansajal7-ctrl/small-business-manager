@@ -32,6 +32,12 @@ export const auth = {
   logout: () => apiRequest<{ ok: boolean }>('/api/auth/logout', { method: 'POST', body: {} }),
   me: () => apiRequest<MeResponse>('/api/auth/me'),
   acceptInvite: (code: string) => apiRequest<{ businessId: string; role: string }>('/api/invites/accept', { method: 'POST', body: { code } }),
+  /** Redeem a one-time reset code (anonymous - the person cannot sign in yet). */
+  resetPassword: (body: { email: string; code: string; newPassword: string }) =>
+    apiRequest<{ ok: boolean; email: string }>('/api/auth/password/reset', { method: 'POST', body, anonymous: true }),
+  /** Change your own password while signed in. */
+  changePassword: (body: { currentPassword: string; newPassword: string }) =>
+    apiRequest<{ ok: boolean }>('/api/auth/password/change', { method: 'POST', body }),
 };
 
 export const businesses = {
@@ -51,6 +57,12 @@ export const members = {
   revokeInvite: (id: string) => apiRequest<{ ok: boolean }>(`/api/members/invites/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   update: (id: string, body: { role?: string; status?: string; grants?: string[]; denials?: string[] }) =>
     apiRequest<{ ok: boolean }>(`/api/members/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
+  /** Issue a one-time password reset code. The code is returned exactly once. */
+  resetCode: (id: string) =>
+    apiRequest<{ email: string; displayName: string; code: string; expiresAt: string; note: string }>(
+      `/api/members/${encodeURIComponent(id)}/reset-code`,
+      { method: 'POST', body: {} },
+    ),
   audit: (limit = 100) => apiRequest<AuditRow[]>('/api/audit', { query: { limit } }),
 };
 

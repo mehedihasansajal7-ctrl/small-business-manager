@@ -282,7 +282,28 @@ export const SCREEN_MESSAGES = {
   'team.emailNotRequired': { en: 'The invite code is enough — the person can register with any email.', bn: 'ইনভাইট কোডই যথেষ্ট — যেকোনো ইমেইল দিয়ে রেজিস্টার করা যাবে।' },
   'team.roleHint': { en: 'Roles decide what each person can see and do. The server enforces this too.', bn: 'ভূমিকা নির্ধারণ করে কে কী দেখতে ও করতে পারবে। সার্ভারও এটি নিশ্চিত করে।' },
 
+  'team.resetPassword': { en: 'Reset password', bn: 'পাসওয়ার্ড রিসেট' },
+  'team.resetTitle': { en: 'Issue a reset code', bn: 'রিসেট কোড তৈরি করুন' },
+  'team.resetExplain': {
+    en: 'There is no email provider in this deployment, so the code is handed over in person. The person enters it on the sign-in screen together with a new password; their existing sessions end when the code is used.',
+    bn: 'এই ডিপ্লয়মেন্টে ইমেইল সার্ভিস নেই, তাই কোডটি সরাসরি জানাতে হবে। ব্যক্তিটি সাইন-ইন স্ক্রিনে কোড + নতুন পাসওয়ার্ড দেবেন; কোড ব্যবহার হলে তাঁর পুরনো সেশন শেষ হয়ে যাবে।',
+  },
+  'team.resetGenerate': { en: 'Generate code', bn: 'কোড তৈরি করুন' },
+  'team.resetIssued': { en: 'Reset code generated.', bn: 'রিসেট কোড তৈরি হয়েছে।' },
+  'team.resetOnce': { en: 'Copy it now — it is shown only once and cannot be recovered.', bn: 'এখনই কপি করুন — এটি শুধু একবার দেখানো হয়, পরে আর দেখা যাবে না।' },
+  'team.resetExpires': { en: 'Valid until', bn: 'বৈধ থাকবে' },
+  'team.resetExplainHow': {
+    en: 'Only owners and admins can issue a code, and never for themselves or for another admin.',
+    bn: 'শুধু owner ও admin কোড দিতে পারেন — নিজের বা অন্য admin-এর জন্য নয়।',
+  },
+
   // ------------------------------------------------------------- settings
+  'set.security': { en: 'Security', bn: 'নিরাপত্তা' },
+  'set.securityHint': { en: 'Your own password. Changing it signs out your other devices.', bn: 'আপনার নিজের পাসওয়ার্ড। বদলালে অন্য ডিভাইসগুলো সাইন-আউট হবে।' },
+  'set.currentPassword': { en: 'Current password', bn: 'বর্তমান পাসওয়ার্ড' },
+  'set.changePassword': { en: 'Change password', bn: 'পাসওয়ার্ড বদলান' },
+  'set.passwordChanged': { en: 'Password changed — other devices were signed out.', bn: 'পাসওয়ার্ড বদলানো হয়েছে — অন্য ডিভাইস সাইন-আউট হয়েছে।' },
+  'set.passwordHint': { en: 'At least 8 characters. Share the new password with nobody.', bn: 'কমপক্ষে ৮ অক্ষর দিন। নতুন পাসওয়ার্ড কারও সঙ্গে শেয়ার করবেন না।' },
   'set.profile': { en: 'Business profile', bn: 'ব্যবসার পরিচিতি' },
   'set.visibility': { en: 'Partner visibility', bn: 'অংশীদারের দৃশ্যমানতা' },
   'set.visibilityHint': {

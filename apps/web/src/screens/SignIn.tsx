@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ApiError } from '../api/client';
+import { auth as authApi } from '../api/endpoints';
 import { useApp, useT } from '../state/AppContext';
 import { LOCALES } from '../i18n';
 import { Button, Card, Notice, TextInput } from '../components/ui';
@@ -16,6 +17,14 @@ export function SignInScreen() {
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Password reset without email: a partner issues a one-time code, the person
+  // redeems it here. Kept on this screen because they cannot sign in yet.
+  const [showReset, setShowReset] = useState(false);
+  const [resetCode, setResetCode] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [resetDone, setResetDone] = useState(false);
 
   const run = (action: () => Promise<void>) => {
     setError(null);
@@ -70,19 +79,90 @@ export function SignInScreen() {
           {error ? <Notice level="error">{error}</Notice> : null}
 
           {tab === 'signIn' ? (
-            <form
-              className="form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                run(() => signIn(email.trim(), password));
-              }}
-            >
-              <TextInput label={t('common.email')} type="email" autoComplete="username" required value={email} onValueChange={setEmail} />
-              <TextInput label={t('auth.password')} type="password" autoComplete="current-password" required value={password} onValueChange={setPassword} />
-              <Button type="submit" variant="primary" block disabled={busy}>
-                {t('auth.signIn')}
-              </Button>
-            </form>
+            showReset ? (
+              resetDone ? (
+                <div className="form">
+                  <Notice level="success">{t('auth.resetDone')}</Notice>
+                  <p className="muted">{t('auth.resetDoneHint')}</p>
+                  <Button
+                    variant="primary"
+                    block
+                    onClick={() => {
+                      setShowReset(false);
+                      setResetDone(false);
+                      setResetCode('');
+                    }}
+                  >
+                    {t('auth.backToSignIn')}
+                  </Button>
+                </div>
+              ) : (
+                <form
+                  className="form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    run(async () => {
+                      if (newPassword !== confirmPassword) {
+                        setError(t('auth.passwordMismatch'));
+                        return;
+                      }
+                      await authApi.resetPassword({
+                        email: email.trim(),
+                        code: resetCode.trim(),
+                        newPassword,
+                      });
+                      setResetDone(true);
+                      setPassword('');
+                      setNewPassword('');
+                      setConfirmPassword('');
+                    });
+                  }}
+                >
+                  <p className="muted">{t('auth.resetHint')}</p>
+                  <TextInput label={t('common.email')} type="email" autoComplete="username" required value={email} onValueChange={setEmail} />
+                  <TextInput
+                    label={t('auth.resetCode')}
+                    required
+                    value={resetCode}
+                    onValueChange={setResetCode}
+                    hint={t('auth.resetCodeHint')}
+                    autoComplete="one-time-code"
+                  />
+                  <TextInput label={t('auth.newPassword')} type="password" required minLength={8} value={newPassword} onValueChange={setNewPassword} autoComplete="new-password" hint="8+ characters" />
+                  <TextInput label={t('auth.confirmPassword')} type="password" required minLength={8} value={confirmPassword} onValueChange={setConfirmPassword} autoComplete="new-password" />
+                  <Button type="submit" variant="primary" block disabled={busy}>
+                    {t('auth.resetSubmit')}
+                  </Button>
+                  <button type="button" className="link" onClick={() => setShowReset(false)} disabled={busy}>
+                    {t('common.cancel')}
+                  </button>
+                </form>
+              )
+            ) : (
+              <form
+                className="form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  run(() => signIn(email.trim(), password));
+                }}
+              >
+                <TextInput label={t('common.email')} type="email" autoComplete="username" required value={email} onValueChange={setEmail} />
+                <TextInput label={t('auth.password')} type="password" autoComplete="current-password" required value={password} onValueChange={setPassword} />
+                <Button type="submit" variant="primary" block disabled={busy}>
+                  {t('auth.signIn')}
+                </Button>
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => {
+                    setError(null);
+                    setShowReset(true);
+                  }}
+                >
+                  {t('auth.forgot')}
+                </button>
+              </form>
+            )
           ) : null}
 
           {tab === 'register' ? (

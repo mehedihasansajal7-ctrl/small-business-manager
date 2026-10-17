@@ -693,6 +693,82 @@ describe('AI rule engine correctness', () => {
   });
 });
 
+describe('password reset without an email provider', () => {
+  it('issues a one-time code that the person redeems themselves', async () => {
+    const owner = await setupBusiness('reset.owner@test.sbm');
+    const invite = await owner.client.post('/api/members/invites', { role: 'manager', email: 'reset.partner@test.sbm' });
+    const partner = client();
+    await partner.post('/api/auth/register', { email: 'reset.partner@test.sbm', password: 'oldpassword1', displayName: 'Partner' });
+    await partner.post('/api/invites/accept', { code: invite.body.code });
+
+    const members = await owner.client.get('/api/members');
+    const row = (members.body as { id: string; email: string; role: string }[]).find((m) => m.email === 'reset.partner@test.sbm');
+    expect(row).toBeTruthy();
+
+    const issued = await owner.client.post(`/api/members/${row?.id as string}/reset-code`, {});
+    expect(issued.status).toBe(200);
+    // readable-out-loud format: 3 groups of 4, no 0/O/1/I
+    expect(issued.body.code).toMatch(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+    expect(issued.body.expiresAt).toBeTruthy();
+
+    // a wrong code changes nothing
+    const wrong = await client().post('/api/auth/password/reset', { email: 'reset.partner@test.sbm', code: 'AAAA-BBBB-CCCC', newPassword: 'brandnew1234' });
+    expect(wrong.status).toBe(400);
+    expect((await client().post('/api/auth/login', { email: 'reset.partner@test.sbm', password: 'oldpassword1' })).status).toBe(200);
+
+    const reset = await client().post('/api/auth/password/reset', { email: 'reset.partner@test.sbm', code: issued.body.code, newPassword: 'brandnew1234' });
+    expect(reset.status).toBe(200);
+
+    // the old password is dead, the new one works
+    expect((await client().post('/api/auth/login', { email: 'reset.partner@test.sbm', password: 'oldpassword1' })).status).toBe(401);
+    expect((await client().post('/api/auth/login', { email: 'reset.partner@test.sbm', password: 'brandnew1234' })).status).toBe(200);
+
+    // and the code is single-use
+    const reuse = await client().post('/api/auth/password/reset', { email: 'reset.partner@test.sbm', code: issued.body.code, newPassword: 'another12345' });
+    expect(reuse.status).toBe(400);
+  });
+
+  it('signs the account out everywhere when the reset succeeds', async () => {
+    const owner = await setupBusiness('reset.sessions@test.sbm');
+    const invite = await owner.client.post('/api/members/invites', { role: 'cashier', email: 'reset.sessions.partner@test.sbm' });
+    const partner = client();
+    await partner.post('/api/auth/register', { email: 'reset.sessions.partner@test.sbm', password: 'stillold123', displayName: 'Partner' });
+    await partner.post('/api/invites/accept', { code: invite.body.code });
+    expect((await partner.get('/api/auth/me')).status).toBe(200);
+
+    const members = await owner.client.get('/api/members');
+    const row = (members.body as { id: string; email: string }[]).find((m) => m.email === 'reset.sessions.partner@test.sbm');
+    const issued = await owner.client.post(`/api/members/${row?.id as string}/reset-code`, {});
+    expect(issued.status).toBe(200);
+
+    expect((await client().post('/api/auth/password/reset', { email: 'reset.sessions.partner@test.sbm', code: issued.body.code, newPassword: 'brandnew1234' })).status).toBe(200);
+    // the session that existed before the reset is gone
+    expect((await partner.get('/api/auth/me')).status).toBe(401);
+  });
+
+  it('refuses a self-issued code and cannot reach another business', async () => {
+    const owner = await setupBusiness('reset.guard@test.sbm');
+    const outsider = await setupBusiness('reset.outsider@test.sbm');
+    const own = await owner.client.get('/api/members');
+    const me = (own.body as { id: string; email: string }[]).find((m) => m.email === 'reset.guard@test.sbm');
+
+    const self = await owner.client.post(`/api/members/${me?.id as string}/reset-code`, {});
+    expect(self.status).toBe(400);
+    expect(self.body.error.code).toBe('SELF_RESET');
+
+    // another business's owner cannot address this member id at all
+    expect((await outsider.client.post(`/api/members/${me?.id as string}/reset-code`, {})).status).toBe(404);
+  });
+
+  it('changes your own password with the current one', async () => {
+    const owner = await setupBusiness('reset.change@test.sbm');
+    expect((await owner.client.post('/api/auth/password/change', { currentPassword: 'nope', newPassword: 'changed123' })).status).toBe(400);
+    expect((await owner.client.post('/api/auth/password/change', { currentPassword: 'password123', newPassword: 'changed123' })).status).toBe(200);
+    expect((await client().post('/api/auth/login', { email: 'reset.change@test.sbm', password: 'password123' })).status).toBe(401);
+    expect((await client().post('/api/auth/login', { email: 'reset.change@test.sbm', password: 'changed123' })).status).toBe(200);
+  });
+});
+
 describe('exports and backup', () => {
   it('exports CSV and a full JSON backup for permitted roles', async () => {
     const w = await setupBusiness('export@test.sbm');

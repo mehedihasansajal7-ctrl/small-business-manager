@@ -472,6 +472,25 @@ export class Repository {
     });
   }
 
+  /**
+   * Who a one-time reset code may be issued for. Mirrors the escalation rules of
+   * `updateMember`: an admin cannot reset another admin or the owner, and nobody
+   * issues a code for themselves (they are signed in; Settings → Change password
+   * is the right path for that).
+   */
+  passwordResetTarget(caller: Caller, memberId: string): { userId: string; email: string; displayName: string } {
+    this.assertPermission(caller, 'member.manage');
+    const target = this.db.get<MemberRow>('SELECT * FROM members WHERE id = ? AND business_id = ?', [memberId, caller.business.id]);
+    if (!target) throw HttpError.notFound('Member not found');
+    if (target.user_id === caller.user.id) {
+      throw HttpError.badRequest('SELF_RESET', 'You are signed in as this account - use Settings -> Change password, or ask another owner to issue a code.');
+    }
+    if (target.status !== 'active') throw HttpError.badRequest('INACTIVE_MEMBER', 'This member is not active - reactivate them first.');
+    if (target.role === 'owner' && caller.role !== 'owner') throw HttpError.forbidden('Only the owner can reset another owner');
+    if (target.role === 'admin' && caller.role === 'admin') throw HttpError.forbidden('Only the owner can reset another admin');
+    return { userId: target.user_id, email: target.email, displayName: target.display_name };
+  }
+
   updateMember(caller: Caller, memberId: string, patch: { role?: string; status?: string; grants?: string[]; denials?: string[] }): void {
     const target = this.db.get<MemberRow>('SELECT * FROM members WHERE id = ? AND business_id = ?', [memberId, caller.business.id]);
     if (!target) throw HttpError.notFound('Member not found');
