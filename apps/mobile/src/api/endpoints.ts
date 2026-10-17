@@ -92,6 +92,13 @@ export const logout = (): Promise<{ ok: boolean }> => post<{ ok: boolean }>('/ap
 
 export const me = (): Promise<MeResponse> => get<MeResponse>('/api/auth/me', { skipAuthRedirect: true });
 
+/**
+ * Redeem a one-time reset code. Anonymous on purpose: the person cannot sign in
+ * yet. Succeeding ends every session for that account.
+ */
+export const resetPassword = (input: { email: string; code: string; newPassword: string }): Promise<{ ok: boolean; email: string }> =>
+  post<{ ok: boolean; email: string }>('/api/auth/password/reset', input, { skipAuthRedirect: true });
+
 // ----------------------------------------------------------------- business
 
 export interface CreateBusinessInput {
@@ -139,6 +146,15 @@ export const updateMember = (
   memberId: string,
   patchBody: { role?: string; status?: string; grants?: string[]; denials?: string[] },
 ): Promise<{ ok: boolean }> => patch<{ ok: boolean }>(`/api/members/${encodeURIComponent(memberId)}`, patchBody);
+
+/** Issue a one-time password reset code. The code is returned exactly once. */
+export const issueResetCode = (
+  memberId: string,
+): Promise<{ email: string; displayName: string; code: string; expiresAt: string; note: string }> =>
+  post<{ email: string; displayName: string; code: string; expiresAt: string; note: string }>(
+    `/api/members/${encodeURIComponent(memberId)}/reset-code`,
+    {},
+  );
 
 export const auditLog = (limit = 100): Promise<AuditEntry[]> => get<AuditEntry[]>('/api/audit', { query: { limit } });
 

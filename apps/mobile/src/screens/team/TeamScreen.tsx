@@ -39,6 +39,7 @@ export function TeamScreen({ navigation }: Props) {
   const [role, setRole] = useState('manager');
   const [email, setEmail] = useState('');
   const [createdCode, setCreatedCode] = useState<string | null>(null);
+  const [issuedReset, setIssuedReset] = useState<{ name: string; code: string; expiresAt: string } | null>(null);
   const [joinCode, setJoinCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -80,6 +81,22 @@ export function TeamScreen({ navigation }: Props) {
       await api.updateMember(id, patchBody);
       reloadMembers();
       setNotice(t('common.save'));
+    } catch (caught) {
+      setError(describeError(caught).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Issue a one-time reset code and show it once, with a copy button. */
+  const issueReset = async (member: { id: string; displayName: string }) => {
+    setError(null);
+    setNotice(null);
+    setBusy(member.id);
+    try {
+      const issued = await api.issueResetCode(member.id);
+      setIssuedReset({ name: member.displayName, code: issued.code, expiresAt: issued.expiresAt });
+      setNotice(t('team.resetIssued'));
     } catch (caught) {
       setError(describeError(caught).message);
     } finally {
@@ -146,6 +163,9 @@ export function TeamScreen({ navigation }: Props) {
                       loading={busy === member.id}
                       onPress={() => void patchMember(member.id, { status: suspended ? 'active' : 'suspended' })}
                     />
+                    {can('member.manage') && member.status === 'active' ? (
+                      <Button label={t('team.resetPassword')} compact variant="secondary" loading={busy === member.id} onPress={() => void issueReset(member)} />
+                    ) : null}
                     {removeCheck.ok ? (
                       <Button label={t('team.remove')} compact variant="danger" loading={busy === member.id} onPress={() => void patchMember(member.id, { status: 'removed' })} />
                     ) : null}
@@ -164,6 +184,23 @@ export function TeamScreen({ navigation }: Props) {
           <EmptyState title={t('common.none')} body={t('team.needsInternet')} />
         )}
       </Card>
+
+      {issuedReset ? (
+        <Card>
+          <Text style={[typography.label, { color: colors.textMuted }]}>
+            {t('team.resetIssued')} · {issuedReset.name}
+          </Text>
+          <Text style={[typography.title, { color: colors.primary, letterSpacing: 2 }]}>{issuedReset.code}</Text>
+          <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+            <Button label={t('common.copy')} compact variant="secondary" onPress={() => void Clipboard.setStringAsync(issuedReset.code)} />
+            <Button label={t('common.share')} compact variant="ghost" onPress={() => void Share.share({ message: `${t('team.resetPassword')}: ${issuedReset.code}` })} />
+          </View>
+          <Text style={[typography.caption, { color: colors.textMuted, marginTop: spacing.sm }]}>{t('team.resetOnce')}</Text>
+          <Text style={[typography.caption, { color: colors.textMuted }]}>
+            {t('team.resetExpires')}: {new Date(issuedReset.expiresAt).toLocaleString()}
+          </Text>
+        </Card>
+      ) : null}
 
       {can('member.invite') ? (
         <>

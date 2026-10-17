@@ -76,6 +76,21 @@ export const STRINGS = {
   'common.showMore': { en: 'Show more', bn: 'আরও দেখুন' },
 
   // ------------------------------------------------------------------ auth
+  // Password reset without email: a partner issues a one-time code, the person
+  // redeems it on this screen. Same server endpoint as the web app.
+  'auth.forgot': { en: 'Forgot your password?', bn: 'পাসওয়ার্ড ভুলে গেছেন?' },
+  'auth.resetHint': {
+    en: 'Enter the one-time code a partner gave you, then choose a new password. No code? Ask an owner or admin to open Team → Reset password.',
+    bn: 'সঙ্গী যে একবার-ব্যবহারের কোডটি দিয়েছেন সেটি লিখে নতুন পাসওয়ার্ড দিন। কোড না থাকলে owner/admin-কে বলুন Team → Reset password খুলতে।',
+  },
+  'auth.resetCode': { en: 'Reset code', bn: 'রিসেট কোড' },
+  'auth.resetCodeHint': { en: 'Looks like ABCD-EFGH-JKLM. Valid for 30 minutes, one use only.', bn: 'ABCD-EFGH-JKLM এর মতো। ৩০ মিনিট বৈধ, একবারই ব্যবহারযোগ্য।' },
+  'auth.newPassword': { en: 'New password', bn: 'নতুন পাসওয়ার্ড' },
+  'auth.confirmPassword': { en: 'Confirm new password', bn: 'নতুন পাসওয়ার্ড আবার দিন' },
+  'auth.passwordMismatch': { en: 'The two passwords do not match.', bn: 'দুইবার লেখা পাসওয়ার্ড মিলছে না।' },
+  'auth.resetSubmit': { en: 'Set the new password', bn: 'নতুন পাসওয়ার্ড সেট করুন' },
+  'auth.resetDone': { en: 'Password changed — sign in with the new one.', bn: 'পাসওয়ার্ড বদলানো হয়েছে — নতুনটা দিয়ে সাইন ইন করুন।' },
+  'auth.backToSignIn': { en: 'Back to sign in', bn: 'সাইন ইনে ফিরে যান' },
   'auth.signIn': { en: 'Sign in', bn: 'সাইন ইন' },
   'signin.advanced': { en: 'Advanced: which server?', bn: 'সার্ভারের ঠিকানা' },
   'signin.serverHint': { en: 'Where the API runs. On a phone use the computer address and port, e.g. http://192.168.0.20:8787 - the emulator default (10.0.2.2) will not work on a real device.', bn: 'API কোথায় চলছে সেটির ঠিকানা। ফোনে কম্পিউটারের ঠিকানা ও পোর্ট দিন, যেমন http://192.168.0.20:8787 - ইমুলেটরের ডিফল্ট (10.0.2.2) আসল ফোনে কাজ করবে না।' },
@@ -239,6 +254,10 @@ export const STRINGS = {
   'farming.plannedOutput': { en: 'Planned output', bn: 'পরিকল্পিত উৎপাদন' },
 
   // ------------------------------------------------------------------- team
+  'team.resetPassword': { en: 'Reset password', bn: 'পাসওয়ার্ড রিসেট' },
+  'team.resetIssued': { en: 'Reset code generated', bn: 'রিসেট কোড তৈরি হয়েছে' },
+  'team.resetOnce': { en: 'Copy it now — shown only once, valid 30 minutes, single use.', bn: 'এখনই কপি করুন — শুধু একবার দেখানো হয়, ৩০ মিনিট বৈধ, একবারই ব্যবহারযোগ্য।' },
+  'team.resetExpires': { en: 'Valid until', bn: 'বৈধ থাকবে' },
   'team.title': { en: 'Team', bn: 'টিম' },
   'team.members': { en: 'Members', bn: 'সদস্য' },
   'team.invites': { en: 'Invitations', bn: 'আমন্ত্রণ' },
