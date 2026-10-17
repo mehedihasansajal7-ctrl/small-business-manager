@@ -77,3 +77,27 @@ describe('a screen error can never silently kill the whole app', () => {
     expect(boundary).toContain('Try again');
   });
 });
+
+/**
+ * A wrongly posted sale used to be uncorrectable in the app: the API supported
+ * `POST /api/sales/:id/void` and the `sale.void` permission existed, but the UI
+ * had no action at all, so an owner's only option was a manual API call.
+ * Posted documents must stay correctable from the screen they were posted on.
+ */
+describe('posted documents can be corrected from the UI', () => {
+  it('exposes the reversal endpoints in the web API layer', () => {
+    const api = readFileSync(join(SRC, 'api', 'endpointsFinance.ts'), 'utf8');
+    expect(api).toMatch(/voidSale:\s*\(/);
+    expect(api).toMatch(/voidPurchase:\s*\(/);
+    expect(api).toContain('/void');
+  });
+
+  it('offers a Void action on the sales list, gated by the sale.void permission', () => {
+    const sales = readFileSync(join(SRC, 'screens', 'Sales.tsx'), 'utf8');
+    expect(sales).toContain("hasPermission(permissions, 'sale.void')");
+    expect(sales).toContain('sales.voidTitle');
+    // A reason is mandatory, and the audit log records it.
+    expect(sales).toContain('TextAreaInput');
+    expect(sales).toMatch(/voidReason\.trim\(\)\.length < 5/);
+  });
+});

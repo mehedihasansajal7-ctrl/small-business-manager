@@ -375,7 +375,10 @@ export class AIAgent {
     if (permissions.has('report.view')) {
       const summary = repo.dashboard(caller, { from: monthStart, to: today });
       facts.push(`This month sales: ${summary.sales}; purchases: ${summary.purchases}; cash received: ${summary.cashReceived}; cash paid: ${summary.cashPaid}`);
-      facts.push(`Receivables: ${summary.receivables}; payables: ${summary.payables}`);
+      const outstanding = Number(summary.receivables);
+      const owed = Number(summary.payables);
+      if (outstanding > 0) facts.push(`Receivables: ${summary.receivables} (outstanding)`);
+      if (owed > 0) facts.push(`Payables: ${summary.payables} (owed to suppliers)`);
       if ('netProfit' in summary) {
         facts.push(`Accrual net profit this month: ${String(summary.netProfit)}; COGS ${String(summary.costOfGoodsSold)}`);
       } else {
@@ -385,7 +388,10 @@ export class AIAgent {
 
     if (permissions.has('farming.view')) {
       const dashboard = repo.farmingDashboard(caller);
-      facts.push(`Farming: ${dashboard.activeCycles} active cycle(s), ${dashboard.mortalityAlerts} mortality alert(s)`);
+      facts.push(`Farming: ${dashboard.activeCycles} active cycle(s)`);
+      if (dashboard.mortalityAlerts > 0) {
+        facts.push(`Mortality needs attention: ${dashboard.mortalityAlerts} alert(s) above the warning threshold`);
+      }
       if ('totalCostToDate' in dashboard && permissions.has('farming.cost.view')) {
         facts.push(`Farming cost to date: ${dashboard.totalCostToDate}; revenue ${dashboard.revenue}`);
       }
@@ -681,7 +687,8 @@ export function deterministicActions(request: AIRequest): string[] {
   const actions = ['Review the Dashboard alerts, then open the related list to confirm each item.'];
   const facts = request.contextFacts.join(' ').toLowerCase();
   if (facts.includes('low stock')) actions.push('Create a purchase order for the low-stock items (Inventory → Low stock → Create purchase).');
-  if (facts.includes('mortality alert')) actions.push('Open Farming → Mortality, and contact a licensed veterinarian if the loss is sudden or large.');
+  const mortality = facts.match(/mortality (?:needs attention|alerts?):?\s*(\d+)/);
+  if (mortality && Number(mortality[1]) > 0) actions.push('Open Farming → Mortality, and contact a licensed veterinarian if the loss is sudden or large.');
   if (facts.includes('receivables')) actions.push('Record customer receipts (Finance → Receipts) to clear receivables.');
   if (facts.includes('payables')) actions.push('Schedule supplier payments (Finance → Payments) to avoid overdue bills.');
   actions.push('Ask a specific question about one product, crop or species so the answer can be checked against its official label.');

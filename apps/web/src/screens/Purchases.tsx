@@ -11,7 +11,7 @@ import { useOnline } from '../offline/useSync';
 import { AsyncState, Restricted } from '../components/States';
 import { DataTable, type Column } from '../components/DataTable';
 import { DateText, MoneyText } from '../components/MoneyText';
-import { Button, Card, Notice, PageHeader, SelectInput, TextAreaInput, TextInput, TotalRow, Totals } from '../components/ui';
+import { Badge, Button, Card, Modal, Notice, PageHeader, SelectInput, TextAreaInput, TextInput, TotalRow, Totals } from '../components/ui';
 import { useApp, useT } from '../state/AppContext';
 import { useResource, useSyncState } from '../offline/useSync';
 import type { ProductRow, PurchaseRow, SupplierRow } from '../api/types';
@@ -35,6 +35,8 @@ export function PurchasesScreen() {
   const { snapshot } = useSyncState();
   const currency = business?.currency ?? 'BDT';
   const canManage = hasPermission(permissions, 'purchase.manage');
+  /** Reversing a posted purchase needs its own right - it moves stock and money. */
+  const canVoid = hasPermission(permissions, 'purchase.return');
   const showCost = canViewCost(permissions);
 
   const products = useResource(() => cachedList<ProductRow>('products', () => catalog.products()), []);
@@ -48,6 +50,33 @@ export function PurchasesScreen() {
   const [lines, setLines] = useState<readonly DraftLine[]>([emptyLine()]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // ---- void (reversal) dialog: posted history is never edited -----------------
+  const [voidTarget, setVoidTarget] = useState<PurchaseRow | null>(null);
+  const [voidReason, setVoidReason] = useState('');
+  const [voidDate, setVoidDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [voidBusy, setVoidBusy] = useState(false);
+
+  const closeVoidDialog = () => {
+    setVoidTarget(null);
+    setVoidReason('');
+  };
+
+  const submitVoid = async () => {
+    if (!voidTarget) return;
+    setVoidBusy(true);
+    try {
+      await purchaseApi.voidPurchase(voidTarget.id, { date: voidDate, reason: voidReason.trim() });
+      notify(t('purchases.voidDone'), 'success');
+      closeVoidDialog();
+      purchases.reload();
+      products.reload();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : String(cause), 'error');
+    } finally {
+      setVoidBusy(false);
+    }
+  };
 
   const totals = useMemo(
     () =>
@@ -131,8 +160,8 @@ export function PurchasesScreen() {
     })();
   };
 
-  const columns: Column<PurchaseRow>[] = useMemo(
-    () => [
+  const columns: Column<PurchaseRow>[] = useMemo(() => {
+    const base: Column<PurchaseRow>[] = [
       { id: 'reference', header: t('common.reference'), cell: (row) => <span className="mono">{row.reference}</span> },
       { id: 'date', header: t('common.date'), cell: (row) => <DateText value={row.documentDate} /> },
       { id: 'supplier', header: t('purchases.supplier'), cell: (row) => suppliers.data?.find((row2) => row2.id === row.supplierId)?.name ?? '—' },
@@ -140,9 +169,23 @@ export function PurchasesScreen() {
       { id: 'paid', header: t('purchases.paid'), align: 'right', cell: (row) => <MoneyText value={row.paid} currency={row.currency || currency} /> },
       { id: 'payable', header: t('purchases.payable'), align: 'right', cell: (row) => <MoneyText value={row.payable} currency={row.currency || currency} /> },
       { id: 'tax', header: t('sales.tax'), align: 'right', permission: 'purchase.cost.view', cell: (row) => <MoneyText value={row.tax} currency={row.currency || currency} /> },
-    ],
-    [t, currency, suppliers.data],
-  );
+    ];
+    if (canVoid) {
+      base.push({
+        id: 'actions',
+        header: '',
+        cell: (row) =>
+          row.status === 'VOID' || row.status === 'RETURNED' ? (
+            <Badge tone="warn">{t('purchases.voided')}</Badge>
+          ) : (
+            <button type="button" className="link" onClick={() => setVoidTarget(row)}>
+              {t('purchases.void')}
+            </button>
+          ),
+      });
+    }
+    return base;
+  }, [t, currency, suppliers.data, canVoid]);
 
   return (
     <>
@@ -233,6 +276,33 @@ export function PurchasesScreen() {
         </AsyncState>
         {!showCost ? <Notice level="info">{t('inv.hideCost')}</Notice> : null}
       </Card>
+
+      <Modal
+        open={voidTarget !== null}
+        title={t('purchases.voidTitle')}
+        onClose={closeVoidDialog}
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeVoidDialog} disabled={voidBusy}>
+              {t('common.cancel')}
+            </Button>
+            <Button variant="danger" onClick={() => void submitVoid()} disabled={voidBusy || voidReason.trim().length < 5}>
+              {t('purchases.voidConfirm')}
+            </Button>
+          </>
+        }
+      >
+        <p className="muted">{t('purchases.voidHint')}</p>
+        {voidTarget ? <p className="mono">{voidTarget.reference}</p> : null}
+        <TextInput label={t('common.date')} type="date" value={voidDate} onValueChange={setVoidDate} required />
+        <TextAreaInput
+          label={t('purchases.voidReason')}
+          value={voidReason}
+          onValueChange={setVoidReason}
+          hint={t('sales.voidReasonHint')}
+          required
+        />
+      </Modal>
     </>
   );
 }

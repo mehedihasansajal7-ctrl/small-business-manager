@@ -651,6 +651,48 @@ describe('AI agent', () => {
   });
 });
 
+describe('AI rule engine correctness', () => {
+  it('does NOT tell a business with no losses to contact a veterinarian', async () => {
+    const w = await setupBusiness('ai.novet@test.sbm');
+    const ask = await w.client.post<{ text: string; factsUsed: string[] }>('/api/ai/ask', { question: 'How is my business doing this month?', language: 'en' });
+    expect(ask.status).toBe(200);
+    // The facts must not imply an alert when nothing is wrong...
+    expect(ask.body.factsUsed.join(' ')).not.toMatch(/0 mortality alert/i);
+    // ...and no veterinary advice may be offered.
+    expect(ask.body.text).not.toMatch(/veterinar/i);
+    expect(ask.body.text).not.toMatch(/mortality/i);
+  });
+
+  it('DOES raise the veterinary escalation when mortality is actually above the threshold', async () => {
+    const w = await setupBusiness('ai.vet@test.sbm');
+    const farm = await w.client.post<{ id: string }>('/api/farming/farms', { name: 'Farm' });
+    const unit = await w.client.post<{ id: string }>('/api/farming/units', { farmId: farm.body.id, kind: 'POULTRY_HOUSE', name: 'Shed' });
+    const cycle = await w.client.post<{ id: string }>('/api/farming/cycles', {
+      farmId: farm.body.id,
+      unitId: unit.body.id,
+      farmingType: 'POULTRY',
+      title: 'Batch',
+      startDate: '2026-04-01',
+      startingPopulation: '1000',
+    });
+    // 30% loss - above the warning threshold the alerts engine uses.
+    await w.client.post(`/api/farming/cycles/${cycle.body.id}/events`, { eventType: 'MORTALITY', occurredOn: '2026-04-05', quantity: '300', unit: 'pcs', reason: 'Sudden deaths overnight' });
+
+    const ask = await w.client.post<{ text: string; factsUsed: string[] }>('/api/ai/ask', { question: 'What should I watch?', language: 'en' });
+    expect(ask.status).toBe(200);
+    expect(ask.body.factsUsed.join(' ')).toMatch(/mortality needs attention/i);
+    expect(ask.body.text).toMatch(/veterinar/i);
+  });
+
+  it('only suggests chasing money when something is actually outstanding', async () => {
+    const w = await setupBusiness('ai.nomoney@test.sbm');
+    const ask = await w.client.post<{ text: string; factsUsed: string[] }>('/api/ai/ask', { question: 'Anything to do today?', language: 'en' });
+    expect(ask.status).toBe(200);
+    expect(ask.body.factsUsed.join(' ')).not.toMatch(/receivables/i);
+    expect(ask.body.text).not.toMatch(/clear receivables/i);
+  });
+});
+
 describe('exports and backup', () => {
   it('exports CSV and a full JSON backup for permitted roles', async () => {
     const w = await setupBusiness('export@test.sbm');
@@ -713,6 +755,39 @@ describe('corrections and master data', () => {
     const listed = await w.client.get('/api/sales');
     expect((listed.body as { status: string }[])[0]?.status).toBe('VOID');
     expect((await w.client.post(`/api/sales/${sale.body.id}/void`, { date: '2026-04-07', reason: 'again please' })).status).toBe(409);
+  });
+
+  it('refuses to void a purchase whose goods were already sold, and changes nothing', async () => {
+    const w = await setupBusiness('voidpurchase@test.sbm');
+    const purchase = await w.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: w.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    // 40 of the 100 kg have already left the shop...
+    await w.client.post('/api/sales', { documentDate: '2026-04-05', cashReceived: '2720', lines: [{ productId: w.productId, quantity: '40', unit: 'kg', unitPrice: '68' }] });
+
+    const attempt = await w.client.post(`/api/purchases/${purchase.body.id}/void`, { date: '2026-04-06', reason: 'Delivered the wrong grade' });
+    expect(attempt.status).toBe(409);
+    expect(attempt.body.error?.code).toBe('INSUFFICIENT_STOCK');
+
+    // Nothing was half-applied: still posted, stock unchanged, books balanced and
+    // the inventory screen still readable (a partial reversal used to break it).
+    const listed = await w.client.get('/api/purchases');
+    expect((listed.body as { status: string }[])[0]?.status).toBe('POSTED');
+    const inv = await w.client.get('/api/inventory');
+    expect(inv.status).toBe(200);
+    expect((inv.body as { itemId: string; onHand: string }[]).find((row) => row.itemId === w.productId)?.onHand).toBe('60');
+    expect((await w.client.get('/api/reports/trial-balance?from=2026-04-01&to=2026-04-30')).body.balanced).toBe(true);
+    expect((await w.client.get('/api/reports/integrity')).body.ok).toBe(true);
+  });
+
+  it('voids a purchase when the goods are still on hand', async () => {
+    const w = await setupBusiness('voidpurchase2@test.sbm');
+    const purchase = await w.client.post('/api/purchases', { documentDate: '2026-04-01', paid: '5800', lines: [{ productId: w.productId, quantity: '100', unit: 'kg', unitCost: '58' }] });
+    const voided = await w.client.post(`/api/purchases/${purchase.body.id}/void`, { date: '2026-04-02', reason: 'Wrong grade delivered' });
+    expect(voided.status).toBe(200);
+    expect(voided.body.status).toBe('RETURNED');
+    const inv = await w.client.get('/api/inventory');
+    expect((inv.body as { itemId: string; onHand: string }[]).find((row) => row.itemId === w.productId)?.onHand).toBe('0');
+    expect((await w.client.get('/api/reports/trial-balance?from=2026-04-01&to=2026-04-30')).body.balanced).toBe(true);
+    expect((await w.client.get('/api/reports/integrity')).body.ok).toBe(true);
   });
 
   it('requires the void permission and a reason', async () => {

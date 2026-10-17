@@ -67,11 +67,26 @@ export interface PurchaseInput {
 export const sales = {
   list: (range: { from?: string; to?: string } = {}) => apiRequest<SaleRow[]>('/api/sales', { query: range }),
   create: (body: SaleInput) => apiRequest<Record<string, string>>('/api/sales', { method: 'POST', body }),
+  /**
+   * Correct a posted sale. Posted history is never edited: the server adds an
+   * audited reversal entry plus reversing stock movements, then marks the sale
+   * VOID, so the books stay balanced and the stock comes back.
+   */
+  voidSale: (saleId: string, body: { date: string; reason: string }) =>
+    apiRequest<{ status: string; reversalReference: string; reversedStockMovements: number }>(
+      '/api/sales/' + encodeURIComponent(saleId) + '/void',
+      { method: 'POST', body },
+    ),
 };
 
 export const purchases = {
   list: (range: { from?: string; to?: string } = {}) => apiRequest<PurchaseRow[]>('/api/purchases', { query: range }),
   create: (body: PurchaseInput) => apiRequest<Record<string, string>>('/api/purchases', { method: 'POST', body }),
+  voidPurchase: (purchaseId: string, body: { date: string; reason: string }) =>
+    apiRequest<{ status: string; reversalReference: string; reversedStockMovements: number }>(
+      '/api/purchases/' + encodeURIComponent(purchaseId) + '/void',
+      { method: 'POST', body },
+    ),
 };
 
 export const finance = {

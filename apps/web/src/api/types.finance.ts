@@ -18,6 +18,8 @@ export interface SaleRow {
   readonly net: string;
   readonly cashReceived: string;
   readonly receivable: string;
+  /** `POSTED` or `VOID`. A voided sale keeps its row; a reversal was posted. */
+  readonly status?: string;
   /** Only present with cost visibility. */
   readonly cogs?: string;
   readonly grossProfit?: string;
@@ -39,6 +41,8 @@ export interface PurchaseRow {
   readonly total: string;
   readonly paid: string;
   readonly payable: string;
+  /** `POSTED` or `VOID`. A voided purchase keeps its row; a reversal was posted. */
+  readonly status?: string;
   /** Only present with cost visibility. */
   readonly subtotal?: string;
   readonly tax?: string;

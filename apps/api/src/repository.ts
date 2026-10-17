@@ -1394,6 +1394,39 @@ export class Repository {
     }
 
     const eventId = randomUUID();
+    const reversalRows = restock
+      ? this.db.all<MovementRow>('SELECT * FROM stock_movements WHERE business_id = ? AND source_type = ? AND source_id = ?', [
+          caller.business.id,
+          kind === 'sale' ? 'SALE' : 'PURCHASE',
+          document.reference,
+        ])
+      : [];
+
+    // A purchase reversal sends the goods back OUT. Only what is still on hand can
+    // leave: if some of it was already sold, reversing the whole purchase would
+    // drive the ledger negative and break every later stock read. Refuse *before*
+    // writing anything so the document, the books and the stock stay consistent.
+    if (kind === 'purchase' && restock) {
+      for (const row of reversalRows) {
+        const [domain] = this.toDomainMovements([row]);
+        if (!domain) continue;
+        const check = checkStockImpact(this.toDomainMovements(this.movements(caller.business.id, row.item_id)), {
+          itemId: row.item_id,
+          locationId: row.location_id,
+          direction: 'OUT',
+          quantity: domain.quantity,
+          unit: domain.unit,
+        });
+        if (!check.ok) {
+          const product = this.db.get<{ name: string }>('SELECT name FROM products WHERE id = ?', [row.item_id]);
+          throw HttpError.conflict(
+            'INSUFFICIENT_STOCK',
+            `Cannot void ${document.reference}: ${product?.name ?? 'this item'} no longer has enough stock to send back (${check.message}). Void or adjust the sales that consumed it first, or record a purchase return for the remaining quantity.`,
+          );
+        }
+      }
+    }
+
     return this.db.transaction(() => {
       // 1. Reverse the accounting impact exactly (never mutate posted history).
       const original = this.journalEntries(caller.business.id).find((entry) => entry.sourceType === (kind === 'sale' ? 'SALE' : 'PURCHASE') && entry.sourceId === document.reference);
@@ -1410,12 +1443,7 @@ export class Repository {
       // 2. Reverse the stock impact (goods come back, or leave again).
       let reversedMovements = 0;
       if (restock) {
-        const rows = this.db.all<MovementRow>('SELECT * FROM stock_movements WHERE business_id = ? AND source_type = ? AND source_id = ?', [
-          caller.business.id,
-          kind === 'sale' ? 'SALE' : 'PURCHASE',
-          document.reference,
-        ]);
-        for (const row of rows) {
+        for (const row of reversalRows) {
           const [domain] = this.toDomainMovements([row]);
           if (!domain) continue;
           const reversalMove = reversalMovements(domain, {
