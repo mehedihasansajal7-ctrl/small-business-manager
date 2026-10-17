@@ -150,6 +150,27 @@ cd apps/mobile && npm install && npm run android
 #     EXPO_PUBLIC_API_URL=http://192.168.0.20:8787 npm run android
 ```
 
+### Keeping the server up (auto-restart)
+
+```bash
+npm run api:watchdog                        # supervisor, prints to the terminal
+scripts\server-control.cmd status|start|stop|restart
+scripts\reset-password.mjs <email>          # owner lockout, no sign-in needed
+```
+
+The supervisor is what runs at logon on the authoring machine (the Startup entry
+`SBM-API-Server.cmd` calls `scripts\serve-lan-task.cmd`, which now runs the
+watchdog). It does three things:
+
+| Situation | What happens |
+|---|---|
+| The server process dies (crash, killed, out of memory) | restarted with backoff 2s → 5s → 10s → 20s → 30s → 60s; the backoff resets after a minute of uptime |
+| The process is alive but wedged | `/api/health` is probed every 30s; three failures in a row kill and restart it |
+| Ten fast crashes in a row | waits 5 minutes before the next attempt instead of spinning, then keeps trying |
+
+`stop` is deliberate and is never overridden: it writes `data/server.stop`, the
+watchdog stops the child and exits. Logs go to `data/server.log`.
+
 > Environment is **optional** in local mode. `.env` is read from the repo root or
 > `apps/api/`; existing process env always wins. Copy [`.env.example`](./.env.example)
 > to change the port, `DATA_DIR`, timezone, session secret or AI providers.
