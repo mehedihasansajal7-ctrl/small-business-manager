@@ -171,6 +171,38 @@ watchdog). It does three things:
 `stop` is deliberate and is never overridden: it writes `data/server.stop`, the
 watchdog stops the child and exits. Logs go to `data/server.log`.
 
+### Production: backups, monitoring, remote access
+
+```bash
+npm run backup                 # full, verified snapshot now (the server also does it daily)
+npm run backup:verify          # restore-test the newest snapshot
+scripts\tunnel.cmd             # HTTPS access from anywhere (needs cloudflared, see below)
+```
+
+**Backups are real now.** The daily job writes `data/backups/sbm-full-YYYY-MM-DD.db`
+with SQLite's `VACUUM INTO` — a complete, consistent copy taken while the server
+keeps serving — then proves it with `PRAGMA integrity_check` before renaming it
+into place (a partial file can never masquerade as a backup). The last
+`BACKUP_KEEP` snapshots are kept (default 14). `npm run backup:verify` opens the
+newest one, re-runs the integrity check, confirms the journal still balances
+*inside the copy*, and compares row counts with the live database. The Desktop
+sync mirrors `data\backups` to OneDrive hourly, so an off-site copy exists too.
+
+**Monitoring is opt-in and free.** Copy `scripts/monitor.env.example` to
+`data/monitor.env`:
+
+| Variable | What it gives you |
+|---|---|
+| `HEALTHCHECK_PING_URL` | A dead-man's switch. Create a free check at healthchecks.io (5-minute period) and paste the ping URL. The watchdog pings it while the server is healthy; if the PC is off or the server stops, the missed pings email you. |
+| `ALERT_WEBHOOK_URL` | A Discord/Slack/Google Chat webhook. The watchdog POSTs `{text, content}` when the server exits, hangs (three failed health checks), or enters a crash loop. Every alert is also appended to `data/ALERT.txt`, and a failed *backup* writes there too. |
+
+**Reaching it from outside.** `scripts\tunnel.cmd` runs a Cloudflare quick tunnel
+(no account, random `https://….trycloudflare.com` address, changes on restart) or,
+with `cloudflared tunnel login`, a permanent named tunnel on your own domain.
+There is deliberately **no port forwarding**: nothing else on the PC is exposed.
+A public URL means the internet can reach the sign-in page, so if the app is only
+for your own devices, Tailscale (private network, free) is the safer choice.
+
 > Environment is **optional** in local mode. `.env` is read from the repo root or
 > `apps/api/`; existing process env always wins. Copy [`.env.example`](./.env.example)
 > to change the port, `DATA_DIR`, timezone, session secret or AI providers.

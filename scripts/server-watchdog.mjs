@@ -17,7 +17,7 @@
  * copy double-starting the server.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +40,64 @@ mkdirSync(dataDir, { recursive: true });
 
 const stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const log = (message) => console.log(`[watchdog ${stamp()}] ${message}`);
+
+// Optional monitoring, configured in data/monitor.env (never committed):
+//   HEALTHCHECK_PING_URL=https://hc-ping.com/<uuid>    (dead-man's switch)
+//   ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/... (crash alerts)
+const monitorFile = join(dataDir, 'monitor.env');
+function readMonitorConfig() {
+  const config = {};
+  try {
+    for (const line of readFileSync(monitorFile, 'utf8').split(/\r?\n/)) {
+      if (!line.trim() || line.trim().startsWith('#')) continue;
+      const match = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (match) config[match[1]] = match[2].replace(/^["']|["']$/g, '').trim();
+    }
+  } catch {
+    /* no monitor.env: monitoring is simply off */
+  }
+  return {
+    heartbeat: config.HEALTHCHECK_PING_URL || process.env.HEALTHCHECK_PING_URL || '',
+    webhook: config.ALERT_WEBHOOK_URL || process.env.ALERT_WEBHOOK_URL || '',
+  };
+}
+const monitor = readMonitorConfig();
+let lastHeartbeat = 0;
+
+/** Dead-man's switch: ping on a cadence the external checker expects. */
+async function heartbeat(force = false) {
+  if (!monitor.heartbeat) return;
+  if (!force && Date.now() - lastHeartbeat < 4.5 * 60_000) return;
+  lastHeartbeat = Date.now();
+  try {
+    await fetch(monitor.heartbeat, { signal: AbortSignal.timeout(8000) });
+  } catch (error) {
+    log(`heartbeat ping failed: ${String(error).slice(0, 120)}`);
+  }
+}
+
+/** Something a human must know about: also written to data/ALERT.txt. */
+async function alert(title, detail) {
+  const line = `[${stamp()}] ${title}: ${detail}`;
+  console.error(`[watchdog ALERT] ${title}: ${detail}`);
+  try {
+    appendFileSync(join(dataDir, 'ALERT.txt'), `${line}\n`);
+  } catch {
+    /* best effort */
+  }
+  if (!monitor.webhook) return;
+  try {
+    // `text` suits Slack/Google Chat, `content` suits Discord - one payload for both.
+    await fetch(monitor.webhook, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: `SBM ${title}: ${detail}`, content: `SBM ${title}: ${detail}` }),
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    log(`alert webhook failed: ${String(error).slice(0, 120)}`);
+  }
+}
 
 function isProcessAlive(pid) {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -168,10 +226,13 @@ async function main() {
       env: process.env,
       stdio: 'inherit',
     });
+    // Tell the external checker we are alive as soon as the server settles.
+    setTimeout(() => void heartbeat(true), SETTLE_MS);
     child.once('exit', (code, signal) => {
       if (stopping) return;
       const uptime = Date.now() - startedAt;
       log(`server exited (code ${code ?? 'null'}${signal ? `, signal ${signal}` : ''}) after ${Math.round(uptime / 1000)}s`);
+      void alert('server exited', `code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''} after ${Math.round(uptime / 1000)}s; restarting`);
       child = null;
 
       if (uptime >= STABLE_MS) {
@@ -184,6 +245,7 @@ async function main() {
       // instead of spinning, but keep trying so a transient fault recovers.
       if (rapidCrashes.length >= 10) {
         log('ten fast crashes in a row - waiting 5 minutes before the next attempt');
+        void alert('crash loop', 'ten fast crashes in a row; waiting 5 minutes (check data/server.log)');
         setTimeout(() => {
           restarts = 0;
           rapidCrashes.length = 0;
@@ -207,12 +269,14 @@ async function main() {
     if (existsSync(stopFile)) return;
     if (await healthy()) {
       failures = 0;
+      void heartbeat();
       return;
     }
     failures += 1;
     log(`health check failed (${failures}/${HEALTH_FAILURES_BEFORE_RESTART})`);
     if (failures >= HEALTH_FAILURES_BEFORE_RESTART) {
       log('the server is not answering /api/health - restarting it');
+      void alert('server hung', `${HEALTH_FAILURES_BEFORE_RESTART} health checks failed in a row; restarting it`);
       failures = 0;
       killChild();
     }
@@ -228,6 +292,7 @@ async function main() {
 
   startChild();
   log(`watching the server on port ${port} (health every ${HEALTH_INTERVAL_MS / 1000}s)`);
+  log(`monitoring: heartbeat ${monitor.heartbeat ? 'on' : 'off'}, alerts ${monitor.webhook ? 'on' : 'off'} (data/monitor.env)`);
 }
 
 await main();

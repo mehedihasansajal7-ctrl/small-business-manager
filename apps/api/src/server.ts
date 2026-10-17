@@ -4,6 +4,7 @@ import { networkInterfaces } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { AIAgent } from './ai.js';
 import { AuthService } from './auth.js';
+import { createBackup } from './backup.js';
 import { loadConfig, loadDotEnv, type AppConfig } from './config.js';
 import { Database } from './db.js';
 import { HttpError, applySecurityHeaders, clientIp, parseCookies, readJsonBody, sendJson } from './http.js';
@@ -208,25 +209,18 @@ export function createApp(overrides: Partial<AppConfig> = {}): App {
 
   function writeDailyBackup(): void {
     try {
-      const dir = join(config.dataDir, 'backups');
-      mkdirSync(dir, { recursive: true });
-      const date = new Date().toISOString().slice(0, 10);
-      const file = join(dir, `sbm-${date}.json`);
-      const businesses = db.all<{ id: string }>('SELECT id FROM businesses');
-      const snapshot: Record<string, unknown> = { createdAt: new Date().toISOString(), schemaVersion: db.schemaVersion, businesses: {} };
-      for (const business of businesses) {
-        (snapshot.businesses as Record<string, unknown>)[business.id] = {
-          business: db.get('SELECT * FROM businesses WHERE id = ?', [business.id]),
-          members: db.all('SELECT * FROM members WHERE business_id = ?', [business.id]),
-          journalLines: db.all('SELECT * FROM journal_lines WHERE business_id = ?', [business.id]),
-          stockMovements: db.all('SELECT * FROM stock_movements WHERE business_id = ?', [business.id]),
-          harvests: db.all('SELECT * FROM harvests WHERE business_id = ?', [business.id]),
-        };
-      }
-      writeFileSync(file, JSON.stringify(snapshot));
-      process.stdout.write(`[jobs] wrote backup ${file}\n`);
+      // A complete, verified copy - not the old five-table summary, which could
+      // not have restored the business.
+      const result = createBackup(config.databaseFile, join(config.dataDir, 'backups'), { keep: Number(process.env.BACKUP_KEEP ?? 14) });
+      process.stdout.write(`[jobs] full backup ${result.file} (${(result.bytes / 1024 / 1024).toFixed(1)} MB, verified, keeping ${result.kept})\n`);
     } catch (error) {
-      process.stderr.write(`[jobs] backup failed: ${(error as Error).message}\n`);
+      // A failed backup is a production incident, so it must be loud.
+      process.stderr.write(`[jobs] BACKUP FAILED: ${(error as Error).message}\n`);
+      try {
+        writeFileSync(join(config.dataDir, 'ALERT.txt'), `[${new Date().toISOString()}] backup failed: ${(error as Error).message}\n`, { flag: 'a' });
+      } catch {
+        /* the alert file is best effort */
+      }
     }
   }
 

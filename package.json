@@ -21,6 +21,8 @@
     "verify": "npm run typecheck && npm run test",
     "api": "npm run build:domain && npm run start -w @sbm/api",
     "api:dev": "npm run build:domain && npm run dev -w @sbm/api",
+    "backup": "node scripts/backup.mjs",
+    "backup:verify": "node scripts/verify-backup.mjs",
     "reset-password": "node scripts/reset-password.mjs",
     "api:watchdog": "node scripts/server-watchdog.mjs",
     "api:lan": "npm run build:domain && node scripts/serve-lan.mjs",
