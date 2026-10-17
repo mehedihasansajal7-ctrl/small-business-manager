@@ -34,3 +34,7 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# local smoke-test artifacts (never commit)
+apps/api/.local-smoke-data/
+.session_secret
