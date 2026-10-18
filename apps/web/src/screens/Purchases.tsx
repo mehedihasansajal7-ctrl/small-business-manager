@@ -78,6 +78,61 @@ export function PurchasesScreen() {
     }
   };
 
+  // A purchase can name a supplier that does not exist yet, and can add a product
+  // on the spot. Making the user open Catalog first was why "enter a supplier"
+  // and "add a product" looked broken on this screen.
+  const [newSupplierName, setNewSupplierName] = useState('');
+  const [newProductFor, setNewProductFor] = useState<DraftLine | null>(null);
+  const [npName, setNpName] = useState('');
+  const [npUnit, setNpUnit] = useState('kg');
+  const [npCost, setNpCost] = useState('');
+  const [npBusy, setNpBusy] = useState(false);
+
+  const openNewProduct = (line: DraftLine) => {
+    setNewProductFor(line);
+    setNpName('');
+    setNpUnit(line.unit || 'kg');
+    setNpCost(line.unitCost || '');
+    setError(null);
+  };
+
+  const createProductForLine = async () => {
+    if (!newProductFor) return;
+    const name = npName.trim();
+    const unit = npUnit.trim();
+    if (!name || !unit) {
+      setError(t('common.requiredFields'));
+      return;
+    }
+    if (!online) {
+      setError(t('purchases.productNeedsInternet'));
+      return;
+    }
+    setNpBusy(true);
+    setError(null);
+    try {
+      const created = await catalog.createProduct({
+        name,
+        unit,
+        kind: 'PRODUCT',
+        ...(npCost.trim() ? { purchasePrice: npCost.trim() } : {}),
+      });
+      updateLine(newProductFor.key, {
+        productId: created.id,
+        unit: created.unit,
+        unitCost: created.purchasePrice ?? npCost,
+      });
+      setNewProductFor(null);
+      setNpName('');
+      products.reload();
+      notify(t('purchases.productAdded'), 'success');
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setNpBusy(false);
+    }
+  };
+
   const totals = useMemo(
     () =>
       computePurchaseTotals({
@@ -103,23 +158,37 @@ export function PurchasesScreen() {
       setError(t('sales.needLine'));
       return;
     }
-    const payload = purchasePayload({
-      documentDate,
-      currency,
-      ...(supplierId ? { supplierId } : {}),
-      ...(paid ? { paid } : {}),
-      ...(note ? { note } : {}),
-      lines: usable.map((line) => ({
-        productId: line.productId,
-        quantity: line.quantity,
-        unit: line.unit,
-        unitCost: line.unitCost,
-        ...(line.tax ? { tax: line.tax } : {}),
-      })),
-    });
     setBusy(true);
     void (async () => {
       try {
+        // A typed supplier name wins over the dropdown, and is created here so the
+        // user never has to leave the purchase to add one.
+        let resolvedSupplierId = supplierId;
+        const typedSupplier = newSupplierName.trim();
+        if (typedSupplier) {
+          if (!online) throw new Error(t('purchases.supplierNeedsInternet'));
+          const created = await catalog.createSupplier({ name: typedSupplier });
+          resolvedSupplierId = created.id;
+          setNewSupplierName('');
+          setSupplierId(created.id);
+          suppliers.reload();
+        }
+
+        const payload = purchasePayload({
+          documentDate,
+          currency,
+          ...(resolvedSupplierId ? { supplierId: resolvedSupplierId } : {}),
+          ...(paid ? { paid } : {}),
+          ...(note ? { note } : {}),
+          lines: usable.map((line) => ({
+            productId: line.productId,
+            quantity: line.quantity,
+            unit: line.unit,
+            unitCost: line.unitCost,
+            ...(line.tax ? { tax: line.tax } : {}),
+          })),
+        });
+
         if (online && business && me) {
           await purchaseApi.create(payload as never);
           notify(t('purchases.posted'), 'success');
@@ -134,7 +203,7 @@ export function PurchasesScreen() {
               record: {
                 id: localId,
                 reference: `${localId.slice(0, 12)}…`,
-                supplierId: supplierId || null,
+                supplierId: resolvedSupplierId || null,
                 documentDate,
                 currency,
                 total: totals.total.amount.toString(),
@@ -207,11 +276,23 @@ export function PurchasesScreen() {
             <SelectInput
               label={t('purchases.supplier')}
               value={supplierId}
-              onValueChange={setSupplierId}
+              onValueChange={(value) => {
+                setSupplierId(value);
+                if (value) setNewSupplierName('');
+              }}
               placeholder={t('purchases.supplier')}
               options={(suppliers.data ?? []).map((row) => ({ value: row.id, label: row.name }))}
             />
           </div>
+          <TextInput
+            label={t('purchases.newSupplier')}
+            value={newSupplierName}
+            onValueChange={(value) => {
+              setNewSupplierName(value);
+              if (value.trim()) setSupplierId('');
+            }}
+            hint={t('purchases.newSupplierHint')}
+          />
 
           <AsyncState loading={products.loading} error={products.error} data={products.data} onRetry={products.reload}>
             {(productRows) => {
@@ -221,6 +302,7 @@ export function PurchasesScreen() {
               return (
                 <>
                   {selectable.length !== productRows.length ? <Notice level="warn">{productRows.length - selectable.length} {t('sync.localProposal')}</Notice> : null}
+                  {selectable.length === 0 ? <Notice level="info">{t('purchases.noProducts')}</Notice> : null}
                   <div className="lines">
                     {lines.map((line, index) => (
                       <div className="line" key={line.key}>
@@ -236,6 +318,9 @@ export function PurchasesScreen() {
                             placeholder={t('sales.product')}
                             options={selectable.map((row) => ({ value: row.id, label: `${row.name} (${row.unit})` }))}
                           />
+                          <button type="button" className="link" onClick={() => openNewProduct(line)}>
+                            ＋ {t('purchases.newProduct')}
+                          </button>
                         </div>
                         <TextInput label={t('common.quantity')} inputMode="decimal" value={line.quantity} onValueChange={(value) => updateLine(line.key, { quantity: value })} />
                         <TextInput label={t('common.unit')} value={line.unit} onValueChange={(value) => updateLine(line.key, { unit: value })} />
@@ -276,6 +361,29 @@ export function PurchasesScreen() {
         </AsyncState>
         {!showCost ? <Notice level="info">{t('inv.hideCost')}</Notice> : null}
       </Card>
+
+      <Modal
+        open={newProductFor !== null}
+        title={t('purchases.newProductTitle')}
+        onClose={() => setNewProductFor(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setNewProductFor(null)} disabled={npBusy}>
+              {t('common.cancel')}
+            </Button>
+            <Button variant="primary" onClick={() => void createProductForLine()} disabled={npBusy || !npName.trim() || !npUnit.trim()}>
+              {t('purchases.addProduct')}
+            </Button>
+          </>
+        }
+      >
+        <p className="muted">{t('purchases.newProductHint')}</p>
+        <TextInput label={t('common.name')} required value={npName} onValueChange={setNpName} />
+        <div className="grid grid--2">
+          <TextInput label={t('common.unit')} required value={npUnit} onValueChange={setNpUnit} />
+          <TextInput label={t('purchases.unitCost')} inputMode="decimal" value={npCost} onValueChange={setNpCost} />
+        </div>
+      </Modal>
 
       <Modal
         open={voidTarget !== null}

@@ -79,6 +79,31 @@ export const SCREEN_MESSAGES = {
   'sales.needLine': { en: 'Add at least one line with a quantity.', bn: 'অন্তত একটি লাইন ও পরিমাণ দিন।' },
 
   // ------------------------------------------------------------ purchases
+  'purchases.newSupplier': { en: 'New supplier · type a name', bn: 'নতুন supplier · নাম লিখুন' },
+  'purchases.newSupplierHint': {
+    en: 'Pick one above, or type a new name here — it is created automatically when you post. Needs the internet.',
+    bn: 'উপরের তালিকা থেকে বেছে নিন, অথবা এখানে নতুন নাম লিখুন — পোস্ট করলেই যোগ হয়ে যাবে। ইন্টারনেট দরকার।',
+  },
+  'purchases.supplierNeedsInternet': {
+    en: 'Creating a new supplier needs the internet. Pick an existing one, or record the purchase when you are back online.',
+    bn: 'নতুন supplier যোগ করতে ইন্টারনেট দরকার। পুরোনোটা বেছে নিন, অথবা অনলাইনে এলে ক্রয়টি লিখুন।',
+  },
+  'purchases.newProduct': { en: 'New product', bn: 'নতুন পণ্য' },
+  'purchases.newProductTitle': { en: 'Add a product or service', bn: 'পণ্য বা সার্ভিস যোগ করুন' },
+  'purchases.newProductHint': {
+    en: 'It is created in the catalog immediately and selected on this line.',
+    bn: 'এটি সাথে সাথে ক্যাটালগে যোগ হবে এবং এই লাইনে বেছে নেওয়া হবে।',
+  },
+  'purchases.addProduct': { en: 'Add product', bn: 'পণ্য যোগ করুন' },
+  'purchases.productAdded': { en: 'Product added.', bn: 'পণ্য যোগ হয়েছে।' },
+  'purchases.productNeedsInternet': {
+    en: 'Adding a product needs the internet. It will sync when you are back online.',
+    bn: 'পণ্য যোগ করতে ইন্টারনেট দরকার। অনলাইনে এলে সিঙ্ক হবে।',
+  },
+  'purchases.noProducts': {
+    en: 'No products yet. Use “New product” under a line to add one without leaving this screen.',
+    bn: 'এখনো কোনো পণ্য নেই। এই স্ক্রিন ছাড়াই লাইনের নিচে “নতুন পণ্য” চেপে যোগ করুন।',
+  },
   'purchases.new': { en: 'New purchase', bn: 'নতুন ক্রয়' },
   'purchases.list': { en: 'Purchases list', bn: 'ক্রয় তালিকা' },
   'purchases.supplier': { en: 'Supplier', bn: 'সরবরাহকারী' },

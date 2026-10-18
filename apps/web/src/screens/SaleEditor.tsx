@@ -1,10 +1,11 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { dec } from '@sbm/domain';
 import { ApiError } from '../api/client';
+import { catalog } from '../api/endpoints';
 import { sales as salesApi } from '../api/endpointsFinance';
 import { computeSaleTotals, salePayload } from '../api/documentMath';
 import { hasPermission } from '../api/permissions';
-import { Button, Card, CheckboxInput, Notice, SelectInput, TextAreaInput, TextInput, TotalRow, Totals } from '../components/ui';
+import { Button, Card, CheckboxInput, Modal, Notice, SelectInput, TextAreaInput, TextInput, TotalRow, Totals } from '../components/ui';
 import { MoneyText } from '../components/MoneyText';
 import { useApp, useT } from '../state/AppContext';
 import { useOnline } from '../offline/useSync';
@@ -64,6 +65,58 @@ export function SaleEditor({
   const selectable = products.filter((row) => !isLocalId(row.id));
   const pendingCount = products.length - selectable.length;
 
+  // A product created from this screen is added to the picker immediately (the
+  // parent list is reloaded in the background), so a first sale can be recorded
+  // without a detour through Catalog.
+  const [newProductFor, setNewProductFor] = useState<DraftLine | null>(null);
+  const [npName, setNpName] = useState('');
+  const [npUnit, setNpUnit] = useState('kg');
+  const [npPrice, setNpPrice] = useState('');
+  const [npBusy, setNpBusy] = useState(false);
+  const [extraProducts, setExtraProducts] = useState<readonly ProductRow[]>([]);
+  const pickable = [...selectable, ...extraProducts.filter((extra) => !selectable.some((row) => row.id === extra.id))];
+
+  const openNewProduct = (line: DraftLine) => {
+    setNewProductFor(line);
+    setNpName('');
+    setNpUnit(line.unit || 'kg');
+    setNpPrice(line.unitPrice || '');
+    setError(null);
+  };
+
+  const createProductForLine = async () => {
+    if (!newProductFor) return;
+    const name = npName.trim();
+    const unit = npUnit.trim();
+    if (!name || !unit) {
+      setError(t('common.requiredFields'));
+      return;
+    }
+    if (!online) {
+      setError(t('purchases.productNeedsInternet'));
+      return;
+    }
+    setNpBusy(true);
+    setError(null);
+    try {
+      const created = await catalog.createProduct({
+        name,
+        unit,
+        kind: 'PRODUCT',
+        ...(npPrice.trim() ? { salePrice: npPrice.trim() } : {}),
+      });
+      setExtraProducts((current) => [...current, created]);
+      updateLine(newProductFor.key, { productId: created.id, unit: created.unit, unitPrice: created.salePrice ?? npPrice });
+      setNewProductFor(null);
+      setNpName('');
+      notify(t('purchases.productAdded'), 'success');
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setNpBusy(false);
+    }
+  };
+
   const totals = useMemo(
     () =>
       computeSaleTotals({
@@ -87,7 +140,7 @@ export function SaleEditor({
   };
 
   const pickProduct = (key: string, productId: string) => {
-    const product = products.find((row) => row.id === productId);
+    const product = pickable.find((row) => row.id === productId) ?? products.find((row) => row.id === productId);
     updateLine(key, {
       productId,
       unit: product?.unit ?? '',
@@ -211,6 +264,7 @@ export function SaleEditor({
         />
       </div>
 
+      {pickable.length === 0 ? <Notice level="info">{t('purchases.noProducts')}</Notice> : null}
       <div className="lines">
         {lines.map((line, index) => (
           <div className="line" key={line.key}>
@@ -221,8 +275,11 @@ export function SaleEditor({
                 value={line.productId}
                 onValueChange={(value) => pickProduct(line.key, value)}
                 placeholder={t('sales.product')}
-                options={selectable.map((row) => ({ value: row.id, label: `${row.name} (${row.onHand} ${row.unit})` }))}
+                options={pickable.map((row) => ({ value: row.id, label: `${row.name} (${row.onHand ?? '0'} ${row.unit})` }))}
               />
+              <button type="button" className="link" onClick={() => openNewProduct(line)}>
+                ＋ {t('purchases.newProduct')}
+              </button>
             </div>
             <TextInput label={t('common.quantity')} inputMode="decimal" value={line.quantity} onValueChange={(value) => updateLine(line.key, { quantity: value })} />
             <TextInput label={t('common.unit')} value={line.unit} onValueChange={(value) => updateLine(line.key, { unit: value })} />
@@ -276,6 +333,28 @@ export function SaleEditor({
           )}
         </>
       ) : null}
+      <Modal
+        open={newProductFor !== null}
+        title={t('purchases.newProductTitle')}
+        onClose={() => setNewProductFor(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setNewProductFor(null)} disabled={npBusy}>
+              {t('common.cancel')}
+            </Button>
+            <Button variant="primary" onClick={() => void createProductForLine()} disabled={npBusy || !npName.trim() || !npUnit.trim()}>
+              {t('purchases.addProduct')}
+            </Button>
+          </>
+        }
+      >
+        <p className="muted">{t('purchases.newProductHint')}</p>
+        <TextInput label={t('common.name')} required value={npName} onValueChange={setNpName} />
+        <div className="grid grid--2">
+          <TextInput label={t('common.unit')} required value={npUnit} onValueChange={setNpUnit} />
+          <TextInput label={t('sales.unitPrice')} inputMode="decimal" value={npPrice} onValueChange={setNpPrice} />
+        </div>
+      </Modal>
     </Card>
   );
 }
