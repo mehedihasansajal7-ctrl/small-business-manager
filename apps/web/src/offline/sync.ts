@@ -1,4 +1,5 @@
 import type { OutboxEvent, SyncStatus } from '@sbm/domain';
+import { ApiError } from '../api/client';
 import { sync as syncApi } from '../api/endpoints';
 import type { ConflictRow } from '../api/types';
 import { META_KEYS, getMeta, setMeta, type CacheStore } from './db';
@@ -260,8 +261,18 @@ export class SyncCoordinator {
         await saveCached(upsert.store as CacheStore, normalizeRows(upsert.store as CacheStore, rows));
       }
       if (plan.serverTime) await setMeta(META_KEYS.lastSyncedAt, plan.serverTime);
+      // A successful pull means the earlier failure is over: keeping it would show
+      // a stale warning next to perfectly fresh data.
+      await setMeta(META_KEYS.lastError, '');
       this.patch({ openConflicts: plan.conflicts as unknown as ConflictRow[] });
     } catch (error) {
+      // A 401 means the session is not established yet (or expired). That is not a
+      // data problem, it is the sign-in screen's job - and a stored
+      // "Sign in required" would otherwise sit under the toolbar forever.
+      if (error instanceof ApiError && error.status === 401) {
+        await setMeta(META_KEYS.lastError, '');
+        throw error;
+      }
       const message = error instanceof Error ? error.message : 'Pull failed';
       await setMeta(META_KEYS.lastError, message);
       throw error;

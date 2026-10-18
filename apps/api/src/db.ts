@@ -919,6 +919,23 @@ export function parseJson<T>(value: unknown, fallback: T): T {
  * Implemented as one atomic upsert with RETURNING so it is safe to call from
  * inside an existing transaction (an offline sync batch, for example).
  */
+/**
+ * A per-business running number with no date in it, e.g. `P-000123`.
+ *
+ * Product codes are read out loud, written on labels and typed into a search
+ * box, so they should be short and stable - unlike document references, which
+ * carry the date because that is how a shopkeeper finds them.
+ */
+export function nextSequence(db: Database, businessId: string, kind: string, prefix: string, pad = 6): string {
+  const row = db.get<{ next_value: number }>(
+    `INSERT INTO number_sequences (business_id, kind, next_value) VALUES (?, ?, 1)
+     ON CONFLICT(business_id, kind) DO UPDATE SET next_value = number_sequences.next_value + 1
+     RETURNING next_value`,
+    [businessId, kind],
+  );
+  return `${prefix}-${String(row?.next_value ?? 1).padStart(pad, '0')}`;
+}
+
 export function nextReference(db: Database, businessId: string, kind: string, prefix: string, date: string): string {
   const compact = date.replace(/-/g, '');
   const key = `${kind}:${compact}`;

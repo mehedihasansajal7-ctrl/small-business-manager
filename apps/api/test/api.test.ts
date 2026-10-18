@@ -693,6 +693,32 @@ describe('AI rule engine correctness', () => {
   });
 });
 
+describe('product codes', () => {
+  it('generates a code, keeps it, and never lets it be edited', async () => {
+    const w = await setupBusiness('sku@test.sbm');
+
+    const auto = await w.client.post<{ id: string; sku: string }>('/api/products', { name: 'Auto One', unit: 'kg', kind: 'PRODUCT' });
+    expect(auto.status).toBe(200);
+    expect(auto.body.sku).toMatch(/^P-\d{6}$/);
+
+    const second = await w.client.post<{ id: string; sku: string }>('/api/products', { name: 'Auto Two', unit: 'kg', kind: 'PRODUCT' });
+    expect(second.body.sku).toMatch(/^P-\d{6}$/);
+    expect(second.body.sku).not.toBe(auto.body.sku);
+
+    // An explicit code (an import) is kept, because it is what is printed on the shelf.
+    const imported = await w.client.post<{ id: string; sku: string }>('/api/products', { name: 'Imported', unit: 'kg', kind: 'PRODUCT', sku: 'SHELF-42' });
+    expect(imported.body.sku).toBe('SHELF-42');
+
+    // ...but it can never be changed afterwards, not even by a crafted request.
+    const edited = await w.client.patch<{ sku: string }>(`/api/products/${imported.body.id}`, { name: 'Imported renamed', sku: 'HACKED' });
+    expect(edited.status).toBe(200);
+    expect(edited.body.sku).toBe('SHELF-42');
+
+    // A duplicate explicit code is refused rather than merged.
+    expect((await w.client.post('/api/products', { name: 'Duplicate', unit: 'kg', kind: 'PRODUCT', sku: 'SHELF-42' })).status).toBe(409);
+  });
+});
+
 describe('password reset without an email provider', () => {
   it('issues a one-time code that the person redeems themselves', async () => {
     const owner = await setupBusiness('reset.owner@test.sbm');

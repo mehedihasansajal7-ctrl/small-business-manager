@@ -66,7 +66,7 @@ import type {
 } from '@sbm/domain';
 import type { AuthService, UserRow } from './auth.js';
 import type { AppConfig } from './config.js';
-import { Database, nextReference, parseJson } from './db.js';
+import { Database, nextReference, nextSequence, parseJson } from './db.js';
 import { HttpError, requireEnum, requireString, optionalString, asRecord } from './http.js';
 
 /** Row shapes (SQLite stores decimals as TEXT and booleans as 0/1). */
@@ -657,6 +657,27 @@ export class Repository {
       .map((row) => ({ id: row.id, name: row.name, kind: row.kind, address: row.address, isDefault: row.is_default === 1, isActive: row.is_active === 1 }));
   }
 
+  /**
+   * Product codes are generated, never typed: `P-000001`.
+   *
+   * A code supplied by the caller is kept (imports, and rows created before this
+   * rule existed) as long as it is free; a clash is an error, never a silent merge.
+   */
+  private productSku(businessId: string, supplied: string | null): string {
+    if (supplied) {
+      const taken = this.db.get<{ id: string }>('SELECT id FROM products WHERE business_id = ? AND sku = ?', [businessId, supplied]);
+      if (taken) throw HttpError.conflict('DUPLICATE_SKU', `The product code ${supplied} is already used by another product`);
+      return supplied;
+    }
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const candidate = nextSequence(this.db, businessId, 'product-sku', 'P', 6);
+      const taken = this.db.get<{ id: string }>('SELECT id FROM products WHERE business_id = ? AND sku = ?', [businessId, candidate]);
+      if (!taken) return candidate;
+    }
+    // A numbering oddity must not block creating a product.
+    return `P-${randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+  }
+
   createProduct(caller: Caller, input: Record<string, unknown>): ProductRow {
     this.assertPermission(caller, 'product.manage');
     const id = this.id();
@@ -669,7 +690,7 @@ export class Repository {
       [
         id,
         caller.business.id,
-        optionalString(input.sku, 'sku', 60),
+        this.productSku(caller.business.id, optionalString(input.sku, 'sku', 60)),
         requireString(input.name, 'name', { maxLength: 160 }),
         optionalString(input.nameBn, 'nameBn', 160),
         optionalString(input.categoryId, 'categoryId', 64),
@@ -694,7 +715,9 @@ export class Repository {
     const fields: string[] = [];
     const params: unknown[] = [];
     const map: Record<string, string> = {
-      name: 'name', nameBn: 'name_bn', sku: 'sku', unit: 'unit', kind: 'kind', categoryId: 'category_id', salePrice: 'sale_price',
+      // `sku` is deliberately absent: the code is generated and must never change,
+      // because it is printed on labels and used to look stock up.
+      name: 'name', nameBn: 'name_bn', unit: 'unit', kind: 'kind', categoryId: 'category_id', salePrice: 'sale_price',
       purchasePrice: 'purchase_price', taxRate: 'tax_rate', reorderLevel: 'reorder_level',
     };
     for (const [key, column] of Object.entries(map)) {
